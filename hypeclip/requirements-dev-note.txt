@@ -1,0 +1,1 @@
+(opcional) opencv-python habilita o Smart Reframe real; sem ele cai em center-crop.
