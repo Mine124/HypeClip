@@ -1,8 +1,16 @@
 """Runs before any hypeclip import.
-1. portable.flag next to the exe -> all data stays in <folder>\Data
-2. AI-patch overlay in Data\app shadows the bundled package."""
+1. Keeps stdout/stderr alive in windowed mode (no console) so the app
+   doesn't die on its first print().
+2. portable.flag next to the exe -> all data stays in <folder>\Data
+3. AI-patch overlay in Data\app shadows the bundled package."""
 import os
 import sys
+
+# ---- windowed-mode safety net (the actual bug fix) ----
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 
 def _exe_dir() -> str:
