@@ -1,0 +1,47 @@
+name: Build Portable
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - id: ver
+        name: Read version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path hypeclip/config.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building v$v"
+
+      - name: Build portable ZIP
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\build_portable.ps1
+
+      - name: Attach ZIP to this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: HypeClip-Portable-${{ steps.ver.outputs.version }}
+          path: dist/HypeClip-Portable-*.zip
+          compression-level: 0
+
+      - name: Publish as a Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: HypeClip Portable v${{ steps.ver.outputs.version }}
+          body: |
+            Portable edition - extract the ZIP anywhere and double-click HypeClip.exe.
+            No installation needed. First SmartScreen warning? More info -> Run anyway.
+          files: dist/HypeClip-Portable-*.zip
