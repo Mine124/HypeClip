@@ -42,11 +42,16 @@ def web_dir() -> str:
 
 
 class Job(pipeline.Reporter):
+    """NOTE: internal attrs are `phase`/`frac` ON PURPOSE - naming them
+    `stage`/`progress` would shadow the Reporter METHODS of those names."""
+
     def __init__(self, url: str, settings: Settings):
         self.id = uuid.uuid4().hex[:12]
         self.url, self.s = url, settings
-        self.state, self.stage = "queued", "queued"
-        self.title, self.progress = "", 0.0
+        self.state = "queued"
+        self.phase = "queued"
+        self.title = ""
+        self.frac = 0.0
         self.logs = collections.deque(maxlen=600)
         self.moments: list = []
         self.series = None
@@ -54,16 +59,17 @@ class Job(pipeline.Reporter):
         self.error: str | None = None
         self.stop_evt = threading.Event()
 
+    # ---- Reporter interface (these MUST stay callable) ----
     def log(self, m): self.logs.append(str(m))
-    def stage(self, n): self.stage = str(n); self.log("> " + str(n))
-    def progress(self, f): self.progress = max(self.progress, min(float(f or 0), 1))
+    def stage(self, n): self.phase = str(n); self.log("> " + str(n))
+    def progress(self, f): self.frac = max(self.frac, min(float(f or 0), 1))
     def moment(self, m): self.moments.append(m)
     def set_series(self, s): self.series = s
     def clip(self, c): self.clips.append(c)
 
     def snapshot(self):
-        return {"id": self.id, "state": self.state, "stage": self.stage,
-                "title": self.title, "progress": round(self.progress, 3),
+        return {"id": self.id, "state": self.state, "stage": self.phase,
+                "title": self.title, "progress": round(self.frac, 3),
                 "error": self.error, "moments": self.moments,
                 "series": self.series, "clips": self.clips,
                 "logs": list(self.logs)[-300:]}
@@ -233,7 +239,6 @@ def caption_defaults():
 
 @app.post("/api/caption/preview")
 def caption_preview(body: dict):
-    """Render a 4s demo of the current caption style -> /clips/_preview.mp4"""
     cs = CaptionStyle(body.get("style") or {})
     w, h = 960, 540
     seg = {"start": 0.3, "end": 3.8,
@@ -258,7 +263,7 @@ def caption_preview(body: dict):
            "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
     run(cmd)
     return {"url": "/clips/" + urllib.parse.quote("_preview.mp4")
-            + "?v=" + str(uuid.uuid4().hex[:6])}
+            + "?v=" + uuid.uuid4().hex[:6]}
 
 
 def _preset_path(name: str) -> str:
