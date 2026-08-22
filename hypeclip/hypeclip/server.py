@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import urllib.parse
 import uuid
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -14,20 +15,30 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import pipeline, updater
-from .config import APP_VERSION, DATA_DIR, WEB_DIR, Settings
+from .captionstyle import DEFAULTS, CaptionStyle
+from .config import APP_VERSION, DATA_DIR, RESOURCE_DIR, WEB_DIR, Settings
+from .utils import ff_filter_path, resolve_bin, run
 
 app = FastAPI(title="HypeClip Studio")
 jobs: dict = {}
 exports: dict = {}
 LAST_OPTS_PATH = os.path.join(DATA_DIR, "last_options.json")
+PRESET_DIR = os.path.join(DATA_DIR, "presets")
 _DL: dict = {"state": "idle", "frac": 0.0, "error": None, "path": None}
 
 _LAST_KEYS = ("mode", "max_clips", "clip_duration", "pre_roll", "hype_threshold",
               "cooldown", "max_height", "fps", "gpu", "workers", "aspect",
               "smart_reframe", "fx_look", "bloom", "grain", "vignette",
               "zoom_punch", "zoom_strength", "shake", "beat_sync", "flash_intro",
-              "progress_bar", "autocaptions", "caption_style", "whisper_model",
+              "progress_bar", "autocaptions", "whisper_model",
               "sfx_enabled", "sfx_volume_db", "music_volume_db", "duck_music")
+
+os.makedirs(PRESET_DIR, exist_ok=True)
+
+
+def web_dir() -> str:
+    ov = os.path.join(DATA_DIR, "web")
+    return ov if os.path.isfile(os.path.join(ov, "index.html")) else WEB_DIR
 
 
 class Job(pipeline.Reporter):
@@ -64,29 +75,23 @@ class StartReq(BaseModel):
     use_last: bool = False
 
 
-def _save_last(opts: dict):
-    try:
-        with open(LAST_OPTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(opts, f)
-    except Exception:
-        pass
-
-
-def _load_last() -> dict:
-    try:
-        with open(LAST_OPTS_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
 @app.post("/api/jobs")
 def start_job(req: StartReq):
     s = Settings()
     if req.use_last:
-        s.update(_load_last())
+        try:
+            s.update(json.load(open(LAST_OPTS_PATH, encoding="utf-8")))
+        except Exception:
+            pass
+    cap = req.options.pop("caption", None)
+    if isinstance(cap, dict):
+        CaptionStyle(cap).save_active()
     s.update(req.options)
-    _save_last({k: getattr(s, k) for k in _LAST_KEYS})
+    try:
+        json.dump({k: getattr(s, k) for k in _LAST_KEYS},
+                  open(LAST_OPTS_PATH, "w", encoding="utf-8"))
+    except Exception:
+        pass
     job = Job(req.url.strip(), s)
     jobs[job.id] = job
     threading.Thread(target=_run, args=(job,), daemon=True).start()
@@ -135,7 +140,6 @@ def start_export(body: dict):
     src = os.path.join(Settings().out_dir, fname)
     if not os.path.isfile(src):
         raise HTTPException(404, "clip not found")
-
     ex = {"id": uuid.uuid4().hex[:10], "state": "running", "platform": platform,
           "logs": collections.deque(maxlen=100), "result": None, "error": None}
 
@@ -177,7 +181,7 @@ async def upload(kind: str, file: UploadFile = File(...)):
     folder = {"music": s.music_dir, "watermark": s.wm_dir,
               "sfx": s.sfx_dir}.get(kind)
     if not folder:
-        raise HTTPException(400, "kind must be music | watermark | sfx")
+        raise HTTPException(400, "bad kind")
     ext = os.path.splitext(file.filename or "")[1].lower()
     dest = os.path.join(folder, f"{uuid.uuid4().hex[:8]}{ext}")
     with open(dest, "wb") as f:
@@ -189,17 +193,15 @@ async def upload(kind: str, file: UploadFile = File(...)):
 def reveal(body: dict):
     path = body.get("path", "")
     if not path or not os.path.exists(path):
-        raise HTTPException(404, "not found")
+        raise HTTPException(404)
     if sys.platform == "win32":
-        if os.path.isfile(path):
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-        else:
-            subprocess.Popen(["explorer", os.path.normpath(path)])
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)]
+                         if os.path.isfile(path) else ["explorer",
+                                                       os.path.normpath(path)])
     elif sys.platform == "darwin":
         subprocess.Popen(["open", "-R", path])
     else:
-        subprocess.Popen(["xdg-open", path if os.path.isdir(path)
-                          else os.path.dirname(path)])
+        subprocess.Popen(["xdg-open", path])
     return {"ok": True}
 
 
@@ -223,7 +225,81 @@ def meta():
             "manifest_configured": bool(updater.MANIFEST_URL)}
 
 
-# ------------- updates / AI patch studio -------------
+# ------------------------- captions -------------------------
+@app.get("/api/caption/defaults")
+def caption_defaults():
+    return DEFAULTS
+
+
+@app.post("/api/caption/preview")
+def caption_preview(body: dict):
+    """Render a 4s demo of the current caption style -> /clips/_preview.mp4"""
+    cs = CaptionStyle(body.get("style") or {})
+    w, h = 960, 540
+    seg = {"start": 0.3, "end": 3.8,
+           "text": "this caption style goes absolutely crazy",
+           "words": [
+               {"w": "this", "s": 0.30, "e": 0.55},
+               {"w": "caption", "s": 0.55, "e": 0.95},
+               {"w": "style", "s": 0.95, "e": 1.30},
+               {"w": "goes", "s": 1.30, "e": 1.55},
+               {"w": "absolutely", "s": 1.55, "e": 2.15},
+               {"w": "crazy", "s": 2.15, "e": 2.70},
+               {"w": "wow", "s": 2.90, "e": 3.40},
+           ]}
+    ass = os.path.join(Settings().work_dir, "_preview.ass")
+    os.makedirs(Settings().work_dir, exist_ok=True)
+    cs.write_ass([seg], ass, w, h)
+    out = os.path.join(Settings().out_dir, "_preview.mp4")
+    cmd = [resolve_bin("ffmpeg"), "-y", "-v", "error",
+           "-f", "lavfi", "-i", f"color=c=0x151a28:s={w}x{h}:d=4:r=30",
+           "-vf", f"ass={ff_filter_path(ass)}",
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
+    run(cmd)
+    return {"url": "/clips/" + urllib.parse.quote("_preview.mp4")
+            + "?v=" + str(uuid.uuid4().hex[:6])}
+
+
+def _preset_path(name: str) -> str:
+    safe = "".join(c for c in name if c.isalnum() or c in "-_ ")[:40].strip()
+    if not safe:
+        raise HTTPException(400, "bad preset name")
+    return os.path.join(PRESET_DIR, "cap_" + safe + ".json")
+
+
+@app.get("/api/caption/presets")
+def caption_presets():
+    out = []
+    for f in sorted(os.listdir(PRESET_DIR)):
+        if f.startswith("cap_") and f.endswith(".json"):
+            try:
+                d = json.load(open(os.path.join(PRESET_DIR, f),
+                                   encoding="utf-8"))
+                out.append({"name": d.get("_name", f[4:-5])})
+            except Exception:
+                pass
+    return out
+
+
+@app.post("/api/caption/presets")
+def caption_save(body: dict):
+    name = body.get("name", "").strip()
+    p = _preset_path(name)
+    json.dump({**body.get("style", {}), "_name": name},
+              open(p, "w", encoding="utf-8"), indent=1)
+    return {"ok": True}
+
+
+@app.delete("/api/caption/presets")
+def caption_delete(name: str):
+    p = _preset_path(name)
+    if os.path.isfile(p):
+        os.remove(p)
+    return {"ok": True}
+
+
+# --------------- code update channel ---------------
 @app.get("/api/update/files")
 def update_files():
     return [{"path": p} for p in updater.module_list()]
@@ -239,7 +315,8 @@ def update_file(path: str):
 
 @app.post("/api/update/validate")
 def update_validate(body: dict):
-    err = updater.validate_code(body.get("code", ""))
+    err = updater.validate_code(body.get("code", "")) \
+        if (body.get("path", "") or "x").endswith(".py") else None
     return {"ok": err is None, "error": err}
 
 
@@ -249,6 +326,16 @@ def update_apply(body: dict):
         bak = updater.apply_code(body.get("path", ""), body.get("code", ""),
                                  reporter=lambda m: print(m, flush=True))
         return {"ok": True, "backup": bak}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/update/apply_many")
+def update_apply_many(body: dict):
+    try:
+        done = updater.apply_many(body.get("text", ""),
+                                  reporter=lambda m: print(m, flush=True))
+        return {"ok": True, "files": done}
     except Exception as e:
         raise HTTPException(400, str(e))
 
@@ -284,8 +371,8 @@ def dl_start(body: dict):
 
     def go():
         try:
-            _DL["path"] = updater.download_installer(url,
-                                                     lambda f: _DL.update(frac=f))
+            _DL["path"] = updater.download_installer(
+                url, lambda f: _DL.update(frac=f))
             _DL["state"] = "done"
         except Exception as e:
             _DL["state"], _DL["error"] = "error", str(e)
@@ -296,7 +383,7 @@ def dl_start(body: dict):
 @app.get("/api/update/dl_status")
 def dl_status():
     return {"state": _DL.get("state"), "frac": round(_DL.get("frac", 0), 3),
-            "error": _DL.get("error"), "ready": bool(_DL.get("path"))}
+            "error": _DL.get("error")}
 
 
 @app.post("/api/update/run_installer")
@@ -311,13 +398,9 @@ def run_installer():
 @app.post("/api/update/apply_remote")
 def apply_remote(body: dict):
     try:
-        _DL.update(state="running", frac=0.0, error=None, path=None)
-        done = updater.apply_remote_files(body.get("manifest") or {},
-                                          cb=lambda f: _DL.update(frac=f))
-        _DL["state"] = "done"
+        done = updater.apply_remote_files(body.get("manifest") or {})
         return {"ok": True, "files": done}
     except Exception as e:
-        _DL["state"], _DL["error"] = "error", str(e)
         raise HTTPException(400, str(e))
 
 
@@ -329,9 +412,9 @@ def system_restart():
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+    return FileResponse(os.path.join(web_dir(), "index.html"))
 
 
 Settings().ensure_dirs()
 app.mount("/clips", StaticFiles(directory=Settings().out_dir), name="clips")
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+app.mount("/static", StaticFiles(directory=web_dir()), name="static")
