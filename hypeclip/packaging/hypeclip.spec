@@ -1,13 +1,16 @@
+# -*- mode: python ; coding: utf-8 -*-
 import os
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
+# This spec lives in <project>\packaging\ -> project root is one level up.
 ROOT = os.path.abspath(SPECPATH)
-BIN = os.path.join(ROOT, "..", "bin")
+PROJECT = os.path.normpath(os.path.join(ROOT, ".."))
+BIN = os.path.join(PROJECT, "bin")
 
 datas = [
-    (os.path.join(ROOT, "..", "web"), "web"),
+    (os.path.join(PROJECT, "web"), "web"),
 ]
-pkg_src = os.path.join(ROOT, "..", "hypeclip")
+pkg_src = os.path.join(PROJECT, "hypeclip")
 if os.path.isdir(pkg_src):
     datas.append((pkg_src, "app_src"))
 if os.path.isdir(BIN):
@@ -16,6 +19,7 @@ if os.path.isdir(BIN):
             datas.append((os.path.join(BIN, f), "bin"))
 
 hidden = [
+    "bootstrap",
     "uvicorn", "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",
     "uvicorn.protocols", "uvicorn.protocols.http", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets", "uvicorn.protocols.websockets.auto",
@@ -25,7 +29,9 @@ hidden = [
 ] + collect_submodules("chat_downloader") + collect_submodules("faster_whisper")
 datas += collect_data_files("faster_whisper")
 
-a = Analysis(["run_app.py"], pathex=[os.path.join(ROOT, "..")], datas=datas,
+ENTRY = os.path.join(PROJECT, "run_app.py")
+
+a = Analysis([ENTRY], pathex=[PROJECT], datas=datas,
              hiddenimports=hidden, excludes=["tkinter", "matplotlib"])
 pyz = PYZ(a.pure)
 
