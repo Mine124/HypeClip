@@ -1,5 +1,4 @@
 from __future__ import annotations
-from .captionstyle import CaptionStyle
 import concurrent.futures as cf
 import glob
 import os
@@ -11,6 +10,7 @@ import time
 import urllib.parse
 
 from . import beats, captions, downloader, fx, hype, sfx, youtube
+from .captionstyle import CaptionStyle
 from .config import Settings
 from .utils import fmt_ts, probe_dims, probe_duration, safe_name, which_ffmpeg
 
@@ -73,12 +73,11 @@ def _finish_clip(ctx: dict, start: float, dur: float, idx: int,
 
     subs_path = None
     if settings.autocaptions:
-        karaoke = settings.caption_style == "karaoke"
-        segs = captions.transcribe_audio(wav, settings, r, word_ts=karaoke)
+        segs = captions.transcribe_audio(wav, settings, r)
         if segs:
+            cs = CaptionStyle.load_active()
             subs_path = os.path.join(work, f"c{idx}.ass")
-            captions.write_ass(segs, subs_path, settings.caption_style,
-                               *ctx["dims"])
+            captions.write_ass(segs, subs_path, cs, *ctx["dims"])
 
     events = []
     if settings.sfx_enabled:
@@ -228,71 +227,4 @@ def _live(url, info, settings: Settings, r: Reporter, stop):
     os.makedirs(work, exist_ok=True)
     r.stage("record")
     r.log("recording live stream (mpeg-ts)...")
-    rec_proc = _spawn_recorder(url, work, settings)
-    chat = youtube.LiveChatThread(url, info.get("start_epoch"))
-    chat.start()
-
-    analyzer = hype.HypeAnalyzer(settings)
-    fired: set = set()
-    pending: list = []
-    clips: list = []
-    idx = 0
-    t0 = time.time()
-
-    try:
-        while stop is None or not stop.is_set():
-            time.sleep(1)
-            while True:
-                try:
-                    m = chat.q.get_nowait()
-                except Exception:
-                    break
-                if 0 <= m.t <= 86400 * 2:
-                    analyzer.add(m.t, m.text, m.money)
-
-            rec_file = _find_recording(work)
-            if not rec_file:
-                if time.time() - t0 > 120:
-                    raise RuntimeError("Recorder produced no file.")
-                continue
-            rec_dur = probe_duration(rec_file)
-            if rec_dur <= 0:
-                continue
-
-            moments, _ = analyzer.detect(total=rec_dur)
-            for m in moments:
-                pk = int(m.peak)
-                if rec_dur - m.peak < 60 and pk not in fired and \
-                        all(abs(pk - f) > settings.cooldown for f in fired):
-                    fired.add(pk)
-                    pending.append({"start": max(0, pk - settings.pre_roll),
-                                    "end": pk - settings.pre_roll + settings.clip_duration,
-                                    "score": m.score})
-                    r.log(f"LIVE HYPE @ {fmt_ts(m.peak)} - queued")
-
-            ready = [p for p in pending if rec_dur >= p["end"] + 2]
-            for p in sorted(ready, key=lambda x: x["start"]):
-                pending.remove(p)
-                ctx = {"work": work, "media": rec_file,
-                       "dims": _dims_for(settings.aspect, settings.max_height)}
-                clips.append(_finish_clip(ctx, p["start"], p["end"] - p["start"],
-                                          idx, info["title"], p["score"],
-                                          settings, r))
-                idx += 1
-
-            if chat.dead and chat.q.empty() and rec_proc.poll() is not None:
-                break
-    finally:
-        if rec_proc.poll() is None:
-            rec_proc.terminate()
-            try:
-                rec_proc.wait(timeout=10)
-            except Exception:
-                rec_proc.kill()
-        chat.stop()
-
-    if not settings.keep_temp:
-        shutil.rmtree(work, ignore_errors=True)
-    r.stage("done")
-    r.progress(1.0)
-    return clips
+    rec_proc = _
