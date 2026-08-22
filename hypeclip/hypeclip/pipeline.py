@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .captionstyle import CaptionStyle
 import concurrent.futures as cf
 import glob
 import os
