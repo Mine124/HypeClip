@@ -72,26 +72,60 @@ def _normalize(raw: dict, stream_epoch0: float | None) -> ChatMsg | None:
     )
 
 
-def fetch_chat_replay(url: str, settings, on_batch=None) -> list[ChatMsg]:
+def fetch_chat_replay(url: str, settings, on_batch=None,
+                      inactivity_timeout: float = 240.0) -> list[ChatMsg]:
+    """Fetch chat replay with a hard stall-guard: if no new message arrives
+    within `inactivity_timeout` seconds, we proceed with what we have."""
     try:
         from chat_downloader import ChatDownloader
     except ImportError as e:
         raise RuntimeError("pip install chat-downloader") from e
 
+    q: "queue.Queue" = queue.Queue()
+    SENTINEL = object()
+    errors: list = []
+
+    def consume():
+        try:
+            chat = ChatDownloader().get_chat(url)
+            for raw in chat:
+                m = _normalize(raw, None)
+                if m:
+                    q.put(m)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            q.put(SENTINEL)
+
+    threading.Thread(target=consume, daemon=True).start()
+
     msgs: list[ChatMsg] = []
-    chat = ChatDownloader().get_chat(url)
-    try:
-        for raw in chat:
-            m = _normalize(raw, None)
-            if m:
-                msgs.append(m)
-                if on_batch and len(msgs) % 500 == 0:
-                    on_batch(len(msgs))
-    except Exception as e:
-        if len(msgs) < 10:
-            raise RuntimeError(
-                f"Could not retrieve chat replay ({e}). "
-                f"The archive must have chat replay enabled.") from e
+    last_activity = time.time()
+    stalled = False
+    while True:
+        try:
+            item = q.get(timeout=5)
+        except queue.Empty:
+            if time.time() - last_activity > inactivity_timeout:
+                stalled = True
+                break
+            continue
+        if item is SENTINEL:
+            break
+        msgs.append(item)
+        last_activity = time.time()
+        if on_batch and len(msgs) % 500 == 0:
+            on_batch(len(msgs))
+
+    if stalled:
+        print(f"chat stalled at {len(msgs)} messages - "
+              f"proceeding with what we have", flush=True)
+
+    if len(msgs) < 10:
+        err = errors[0] if errors else RuntimeError("no chat data returned")
+        raise RuntimeError(
+            f"Could not retrieve chat replay ({err}). "
+            f"The archive must have chat replay enabled.")
     return msgs
 
 
@@ -122,7 +156,7 @@ class LiveChatThread(threading.Thread):
                         self._first_seen = m.t - (time.time() - self.join_epoch)
                     m.t -= self._first_seen
                 self.q.put(m)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error = e
         finally:
             self.dead = True
