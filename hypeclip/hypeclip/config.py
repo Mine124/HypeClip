@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "3.1.0"
 
 
 def resource_dir() -> str:
@@ -34,7 +34,7 @@ class Settings:
     mode: str = "auto"
     max_clips: int = 5
     clip_duration: float = 30.0
-    pre_roll: float = 10.0
+    pre_roll: float = 8.0
     hype_threshold: float = 3.0
     cooldown: float = 90.0
     # --- layout / perf ---
@@ -66,10 +66,16 @@ class Settings:
     # --- audio ---
     sfx_enabled: bool = True
     sfx_volume_db: float = 5.0
-    sfx_pack: str = "auto"
     music_file: str = ""
     music_volume_db: float = -16.0
     duck_music: bool = True
+    # --- branding ---
+    sub_name: str = ""
+    sub_pos: str = "br"
+    sub_when: str = "start"
+    sub_dur: float = 4.0
+    # --- scanner ---
+    scan_fps: int = 6
     # --- io ---
     out_dir: str = os.path.join(DATA_DIR, "output")
     work_dir: str = os.path.join(DATA_DIR, "work")
