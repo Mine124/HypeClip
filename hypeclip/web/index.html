@@ -1,260 +1,123 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>HypeClip Studio</title>
-<link rel="stylesheet" href="/static/styles.css"/>
-</head>
-<body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>HypeClip Studio</title><link rel="stylesheet" href="/static/styles.css"/>
+</head><body>
+<div class="bg-mesh"></div>
 <header class="topbar">
-  <div class="logo">
-    <svg viewBox="0 0 24 24" width="22" height="22"><path fill="url(#g)"
-      d="M13 2 3 14h6l-2 8L19 9h-6l2-7z"/>
-      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/>
-      </linearGradient></defs></svg>
-    <span>Hype<b>Clip</b></span><em>STUDIO&nbsp;PRO</em>
-  </div>
-  <nav id="tabs">
-    <button class="tab active" data-tab="studio">Studio</button>
-    <button class="tab" data-tab="captions">Captions</button>
-    <button class="tab" data-tab="code">Code</button>
-    <button class="tab" data-tab="updates">Updates</button>
-  </nav>
-  <div class="head-right">
-    <span id="engineDot" class="dot"></span><span id="engineTxt">...</span>
-    <button id="folderBtn" class="ghost-btn">Output</button>
-  </div>
+  <div class="logo"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="url(#g)" d="M13 2 3 14h6l-2 8L19 9h-6l2-7z"/>
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs></svg>
+    <span>Hype<b>Clip</b></span><em>WIZARD · v3</em></div>
+  <div class="head-right"><span id="engineDot" class="dot"></span>
+    <span id="engineTxt">...</span>
+    <button id="folderBtn" class="ghost-btn">Output</button></div>
 </header>
 
 <main>
-<!-- ================= STUDIO ================= -->
-<section class="tab-panel active" id="panel-studio">
-  <section class="card presets">
-    <div class="seg" id="presets">
-      <button data-p="tiktok" class="active">TikTok Blast</button>
-      <button data-p="cinematic">Cinematic</button>
-      <button data-p="gaming">Gaming</button>
-      <button data-p="podcast">Clean Talk</button>
-      <button data-p="custom">Custom</button>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="srcrow">
-      <input id="urlInput" spellcheck="false"
-        placeholder="Paste a YouTube live / archive link..."/>
-      <button id="goBtn" class="cta">Generate<span class="kbd">Ctrl+Enter</span></button>
-      <button id="stopBtn" class="danger hidden">Stop</button>
-    </div>
-    <details class="panel" open><summary>Core</summary>
-      <div class="grid">
-        <label>Mode<select id="optMode"><option value="auto">auto</option>
-          <option value="vod">archive</option><option value="live">live now</option></select></label>
-        <label>Max clips<input id="optClips" type="number" min="1" max="20" value="5"/></label>
-        <label>Length <b class="val"><output id="durOut">30</output>s</b>
-          <input id="optDur" type="range" min="15" max="120" value="30"/></label>
-        <label>Pre-roll <b class="val"><output id="preOut">10</output>s</b>
-          <input id="optPre" type="range" min="0" max="30" value="10"/></label>
-        <label>Sensitivity <b class="val"><output id="senOut">3</output></b>
-          <input id="optSens" type="range" min="1" max="8" step="0.5" value="3"/></label>
-        <label>Cooldown <b class="val"><output id="coolOut">90</output>s</b>
-          <input id="optCool" type="range" min="30" max="300" value="90"/></label>
-        <label>Quality<select id="optHeight"><option value="480">480p</option>
-          <option value="720" selected>720p</option><option value="1080">1080p</option></select></label>
-        <label>FPS<select id="optFps"><option>24</option><option selected>30</option>
-          <option>60</option></select></label>
-      </div>
-    </details>
-    <details class="panel"><summary>Motion &amp; Look</summary>
-      <div class="grid">
-        <label class="sw"><input id="optZoom" type="checkbox" checked/><i></i>Zoom punch</label>
-        <label>Punch <b class="val"><output id="zsOut">55</output>%</b>
-          <input id="optZoomStr" type="range" min="0" max="100" value="55"/></label>
-        <label>Shake <b class="val"><output id="shOut">35</output>%</b>
-          <input id="optShake" type="range" min="0" max="100" value="35"/></label>
-        <label class="sw"><input id="optBeat" type="checkbox" checked/><i></i>Beat sync</label>
-        <label class="sw"><input id="optFlash" type="checkbox" checked/><i></i>Intro flash</label>
-        <label>Grade<select id="optLook">
-          <option value="capcut" selected>CapCut pop</option>
-          <option value="cinematic">Cinematic</option><option value="noir">Noir</option>
-          <option value="vhs">VHS</option><option value="none">None</option></select></label>
-        <label class="sw"><input id="optBloom" type="checkbox" checked/><i></i>Bloom</label>
-        <label class="sw"><input id="optGrain" type="checkbox"/><i></i>Grain</label>
-        <label class="sw"><input id="optVig" type="checkbox"/><i></i>Vignette</label>
-        <label>Aspect<div class="seg mini" id="segAspect">
-          <button data-a="16:9" class="active">16:9</button>
-          <button data-a="9:16">9:16</button><button data-a="1:1">1:1</button></div></label>
-        <label class="sw"><input id="optReframe" type="checkbox" checked/><i></i>Smart reframe</label>
-        <label class="sw"><input id="optBar" type="checkbox"/><i></i>Progress bar</label>
-        <label>Title<input id="optTitle" placeholder="(optional)"/></label>
-      </div>
-    </details>
-    <details class="panel"><summary>Captions &amp; Audio</summary>
-      <div class="grid">
-        <label class="sw"><input id="optCaps" type="checkbox" checked/><i></i>Auto-captions
-          <small>(style them in the Captions tab)</small></label>
-        <label>Whisper<select id="optWhisper"><option>tiny</option><option>base</option>
-          <option selected>small</option><option>medium</option><option>large-v3</option></select></label>
-        <label class="sw"><input id="optSfx" type="checkbox" checked/><i></i>SFX pack</label>
-        <label>SFX gain <b class="val"><output id="svOut">+5</output>dB</b>
-          <input id="optSfxVol" type="range" min="-10" max="12" value="5"/></label>
-        <label>Music<input type="file" id="musicFile" accept="audio/*"/></label>
-        <label>Music vol <b class="val"><output id="mvOut">-16</output>dB</b>
-          <input id="optMusVol" type="range" min="-30" max="-6" value="-16"/></label>
-        <label class="sw"><input id="optDuck" type="checkbox" checked/><i></i>Duck under voice</label>
-        <label>Watermark<input type="file" id="wmFile" accept="image/png,image/webp"/></label>
-      </div>
-    </details>
-  </section>
-
-  <section id="statusWrap" class="card hidden">
-    <div class="statusrow">
-      <div class="stepper"><span class="step" data-s="resolve">link</span>
-        <span class="step" data-s="chat">chat</span><span class="step" data-s="hype">hype</span>
-        <span class="step" data-s="download">fetch</span><span class="step" data-s="record">rec</span>
-        <span class="step" data-s="clip">render</span>
-        <span class="step done-s" data-s="done">done</span></div>
-      <div id="jobTitle" class="jtitle"></div><div id="pct" class="pct">0%</div>
-    </div>
-    <div class="pbar"><div id="pfill"></div><span class="shine"></span></div>
-    <canvas id="chart" height="150"></canvas>
-    <div class="chart-cap">chat hype over time - red zones become clips</div>
-  </section>
-
-  <div class="cols">
-    <section class="card console"><h3>Console</h3><pre id="log"></pre></section>
-    <section class="card"><h3>Clips</h3>
-      <div id="clipsGrid" class="grid-clips"></div>
-      <div id="emptyClips" class="empty">Your clips will materialize here.</div>
-    </section>
+<section class="card hero">
+  <h1>Turn any stream into clips.</h1>
+  <p>Paste a link. Draw a box over the chat. HypeClip watches how fast it
+     scrolls — when chat goes supernova, that becomes a clip.</p>
+  <div class="srcrow">
+    <input id="urlInput" spellcheck="false"
+      placeholder="YouTube · Twitch VOD · TikTok · any video link..."/>
+    <button id="goBtn" class="cta">Open wizard<span class="kbd">Ctrl↵</span></button>
   </div>
-</section>
-
-<!-- ================= CAPTIONS ================= -->
-<section class="tab-panel" id="panel-captions">
-  <div class="cap-layout">
-    <section class="card cap-controls">
-      <h3>Caption Designer</h3>
-      <p class="hint">Everything updates the live preview instantly. Saved style is used
-        for every generated clip.</p>
-      <div class="grid">
-        <label class="sw"><input id="cap_enabled" type="checkbox" checked/><i></i>Captions on clips</label>
-        <label>Font<select id="cap_font">
-          <option>Arial Black</option><option>Impact</option><option>Verdana</option>
-          <option>Segoe UI Black</option><option>Trebuchet MS</option>
-          <option>Courier New</option><option>Georgia</option></select></label>
-        <label>Size <b class="val"><output id="cap_size_pct_o">6.4</output>%</b>
-          <input id="cap_size_pct" type="range" min="3" max="12" step="0.1" value="6.4"/></label>
-        <label class="sw"><input id="cap_uppercase" type="checkbox" checked/><i></i>UPPERCASE</label>
-        <label>Words at a time <b class="val"><output id="cap_wpg_o">2</output></b>
-          <input id="cap_words_per_group" type="range" min="1" max="6" value="2"/></label>
-        <label>Max line width <b class="val"><output id="cap_mlc_o">24</output> ch</b>
-          <input id="cap_max_line_chars" type="range" min="10" max="48" value="24"/></label>
-        <label>Text color<input type="color" id="cap_primary" value="#FFFFFF"/></label>
-        <label>Highlight<input type="color" id="cap_highlight" value="#FFB300"/></label>
-        <label>Outline color<input type="color" id="cap_outline" value="#000000"/></label>
-        <label>Outline <b class="val"><output id="cap_ol_o">5</output></b>
-          <input id="cap_outline_px" type="range" min="0" max="10" value="5"/></label>
-        <label>Shadow <b class="val"><output id="cap_sh_o">1</output></b>
-          <input id="cap_shadow_px" type="range" min="0" max="6" value="1"/></label>
-        <label>Background box <b class="val"><output id="cap_bb_o">0</output>%</b>
-          <input id="cap_back_box" type="range" min="0" max="90" value="0"/></label>
-        <label>Position<select id="cap_position">
-          <option value="bottom" selected>Bottom</option>
-          <option value="center">Center</option><option value="top">Top</option></select></label>
-        <label>Vertical offset <b class="val"><output id="cap_y_o">12</output>%</b>
-          <input id="cap_y_pct" type="range" min="4" max="40" value="12"/></label>
-        <label>Effect<select id="cap_effect">
-          <option value="pop" selected>Pop</option><option value="bounce">Bounce</option>
-          <option value="slide_up">Slide up</option><option value="fade">Fade</option>
-          <option value="karaoke">Karaoke highlight</option>
-          <option value="none">None</option></select></label>
-        <label>Effect speed <b class="val"><output id="cap_fx_o">220</output>ms</b>
-          <input id="cap_effect_ms" type="range" min="80" max="600" step="20" value="220"/></label>
-      </div>
-    </section>
-    <section class="card cap-preview">
-      <h3>Live preview</h3>
-      <video id="capVideo" src="" autoplay muted loop playsinline></video>
-      <div class="row">
-        <button id="capRerender" class="mini-btn">Re-render preview</button>
-        <span id="capStatus" class="dim"></span>
-      </div>
-      <h3 style="margin-top:18px">Presets</h3>
-      <div class="row">
-        <select id="capPresetSel"><option value="">saved presets...</option></select>
-        <button id="capPresetLoad" class="mini-btn">Load</button>
-        <button id="capPresetDel" class="mini-btn danger">Delete</button>
-      </div>
-      <div class="row">
-        <input id="capPresetName" placeholder="preset name"/>
-        <button id="capPresetSave" class="mini-btn accent">Save current</button>
-      </div>
-    </section>
-  </div>
-</section>
-
-<!-- ================= CODE ================= -->
-<section class="tab-panel" id="panel-code">
-  <section class="card">
-    <h3>Edit any file directly</h3>
+  <details class="panel" open><summary>Render settings</summary>
     <div class="grid">
-      <label>Module<select id="patchFile"><option>loading...</option></select></label>
-      <div class="upd-btns">
-        <button id="patchPrompt" class="mini-btn">Copy AI prompt</button>
-        <button id="patchLoad" class="mini-btn">Load current</button>
-      </div>
+      <label>Clips<input id="optClips" type="number" min="1" max="20" value="5"/></label>
+      <label>Length <b class="val"><output id="durOut">30</output>s</b>
+        <input id="optDur" type="range" min="15" max="120" value="30"/></label>
+      <label>Pre-roll <b class="val"><output id="preOut">8</output>s</b>
+        <input id="optPre" type="range" min="0" max="30" value="8"/></label>
+      <label>Sensitivity <b class="val"><output id="senOut">3</output></b>
+        <input id="optSens" type="range" min="1.5" max="8" step="0.25" value="3"/></label>
+      <label>Quality<select id="optHeight"><option value="480">480p</option>
+        <option value="720" selected>720p</option><option value="1080">1080p</option></select></label>
+      <label>Aspect<div class="seg mini" id="segAspect">
+        <button data-a="16:9" class="active">16:9</button>
+        <button data-a="9:16">9:16</button><button data-a="1:1">1:1</button></div></label>
+      <label>Captions<select id="optCapStyle"><option value="karaoke">Karaoke</option>
+        <option value="tiktok">TikTok</option><option value="clean">Clean</option></select></label>
+      <label class="sw"><input id="optCaps" type="checkbox" checked/><i></i>Captions</label>
+      <label class="sw"><input id="optSfx" type="checkbox" checked/><i></i>SFX</label>
+      <label class="sw"><input id="optZoom" type="checkbox" checked/><i></i>Zoom punch</label>
+      <label class="sw"><input id="optBeat" type="checkbox" checked/><i></i>Beat sync</label>
+      <label>Grade<select id="optLook"><option value="capcut" selected>CapCut pop</option>
+        <option value="cinematic">Cinematic</option><option value="noir">Noir</option>
+        <option value="vhs">VHS</option><option value="none">None</option></select></label>
     </div>
-    <textarea id="patchGoal" rows="1"
-      placeholder="Optional: describe the change you want (included in copied AI prompt)"></textarea>
-    <textarea id="patchCode" rows="14" spellcheck="false"
-      placeholder="Edit code here, or paste a rewritten file..."></textarea>
-    <div class="row">
-      <button id="patchValidate" class="mini-btn">Validate</button>
-      <button id="patchApply" class="mini-btn accent">Apply &amp; Restart</button>
-      <span id="patchMsg"></span>
-    </div>
-    <hr/>
-    <h3>Bulk patch - update with just code</h3>
-    <p class="hint">Paste multiple files at once. Format:
-      <code>=== FILE: hypeclip/fx.py ===</code> on its own line, followed by the file,
-      repeat for each file. Python is syntax-checked automatically.</p>
-    <textarea id="bulkPatch" rows="8" spellcheck="false"
-      placeholder={'=== FILE: hypeclip/fx.py ===\n...file contents...\n\n=== FILE: web/app.js ===\n...'}></textarea>
-    <div class="row">
-      <button id="bulkApply" class="mini-btn accent">Apply all files &amp; Restart</button>
-    </div>
-    <hr/>
-    <h3>Backups (<span id="bakCount">0</span>)</h3>
-    <div id="bakList" class="bak-list"></div>
-  </section>
+  </details>
+  <div id="errBox"></div>
 </section>
 
-<!-- ================= UPDATES ================= -->
-<section class="tab-panel" id="panel-updates">
-  <section class="card">
-    <div class="upd-head"><h3>Software Updates</h3>
-      <div class="upd-ver">installed: <b id="updCur">...</b><span id="updLatest"></span></div></div>
-    <div class="grid">
-      <label>Manifest URL<input id="updUrl" spellcheck="false"
-        placeholder="https://raw.githubusercontent.com/you/hypeclip/main/manifest.json"/></label>
-      <div class="upd-btns">
-        <button id="updCheck" class="mini-btn">Check online</button>
-        <button id="updDl" class="mini-btn accent hidden">Get v<span id="updNextVer"></span></button>
-      </div>
-    </div>
-    <div class="pbar slim"><div id="dlFill"></div></div>
-    <div id="updNotes" class="notes"></div>
-    <div class="row">
-      <button id="instGo" class="mini-btn danger hidden">Run downloaded installer (closes app)</button>
-      <button id="remoteApply" class="mini-btn hidden">Install verified hot-fix files</button>
-    </div>
-  </section>
+<section id="statusWrap" class="card hidden">
+  <div class="statusrow"><div id="jobTitle" class="jtitle"></div>
+    <div id="pct" class="pct">0%</div></div>
+  <div class="pbar"><div id="pfill"></div></div>
+  <canvas id="chart" height="140"></canvas>
 </section>
+
+<div class="cols">
+  <section class="card console"><h3>Console</h3><pre id="log"></pre></section>
+  <section class="card"><h3>Clips</h3>
+    <div id="clipsGrid" class="grid-clips"></div>
+    <div id="emptyClips" class="empty">No clips yet.</div></section>
+</div>
 </main>
+
+<!-- WIZARD MODAL -->
+<div id="wiz" class="modal hidden"><div class="wiz-card">
+  <button id="wizClose" class="x">✕</button>
+  <div class="wiz-steps">
+    <div class="wstep active" data-w="1"><b>1</b><span>Select</span></div><i></i>
+    <div class="wstep" data-w="2"><b>2</b><span>Scan</span></div><i></i>
+    <div class="wstep" data-w="3"><b>3</b><span>Review</span></div><i></i>
+    <div class="wstep" data-w="4"><b>4</b><span>Render</span></div>
+  </div>
+
+  <div class="wpanel" id="wp1">
+    <div class="vidwrap" id="vidwrap">
+      <video id="wizVideo" controls playsinline></video>
+      <div id="rectBox" class="hidden"></div>
+      <div id="drawShade" class="hidden"></div>
+    </div>
+    <div class="row">
+      <button id="btnDraw" class="mini-btn">📐 Select chat area</button>
+      <label class="sw slim"><input type="checkbox" id="noChat"/><i></i>
+        No chat visible — find hype from audio instead</label>
+      <span class="flex1"></span>
+      <button id="btnScan" class="cta sm" disabled>Start scanning ✨</button>
+    </div>
+    <p id="drawHint" class="hint hidden">Drag a rectangle around the chat panel.
+      Include a little padding. Redraw anytime.</p>
+    <div class="pbar slim"><div id="prepFill"></div></div>
+    <p class="hint" id="prepTxt">fetching video…</p>
+  </div>
+
+  <div class="wpanel hidden" id="wp2">
+    <div class="radar"><div class="radar-ring r1"></div><div class="radar-ring r2"></div>
+      <div class="radar-core"><b id="scanPct">0%</b><span>reading chat speed</span></div></div>
+    <canvas id="scanChart" height="110"></canvas>
+    <p class="hint" style="text-align:center">watching your rectangle — spikes mean chat is exploding</p>
+  </div>
+
+  <div class="wpanel hidden" id="wp3">
+    <h3>Found hype moments</h3>
+    <div id="peaks" class="peaks"></div>
+    <div class="row">
+      <span class="dim">Sensitivity</span>
+      <input id="rescanSens" type="range" min="1.5" max="8" step="0.25" value="3"/>
+      <button id="btnRescan" class="mini-btn">↻ Re-scan</button>
+      <span class="flex1"></span>
+      <button id="btnConfirm" class="cta sm">Render clips 🎬</button>
+    </div>
+  </div>
+
+  <div class="wpanel hidden" id="wp4">
+    <div class="pbar"><div id="renFill"></div></div>
+    <p class="hint" id="renTxt">rendering…</p>
+    <div id="wizClips" class="grid-clips"></div>
+  </div>
+</div></div>
 <div id="toasts"></div>
-<script src="/static/app.js"></script>
-</body>
-</html>
+<script src="/static/app.js"></script></body></html>
