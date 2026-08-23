@@ -2,6 +2,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import queue as _queue
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import pipeline, updater
+from .branding import router as branding_router
 from .captionstyle import DEFAULTS, CaptionStyle
 from .config import APP_VERSION, DATA_DIR, RESOURCE_DIR, WEB_DIR, Settings
 from .utils import ff_filter_path, resolve_bin, run
@@ -25,14 +27,6 @@ exports: dict = {}
 LAST_OPTS_PATH = os.path.join(DATA_DIR, "last_options.json")
 PRESET_DIR = os.path.join(DATA_DIR, "presets")
 _DL: dict = {"state": "idle", "frac": 0.0, "error": None, "path": None}
-
-_LAST_KEYS = ("mode", "max_clips", "clip_duration", "pre_roll", "hype_threshold",
-              "cooldown", "max_height", "fps", "gpu", "workers", "aspect",
-              "smart_reframe", "fx_look", "bloom", "grain", "vignette",
-              "zoom_punch", "zoom_strength", "shake", "beat_sync", "flash_intro",
-              "progress_bar", "autocaptions", "whisper_model",
-              "sfx_enabled", "sfx_volume_db", "music_volume_db", "duck_music")
-
 os.makedirs(PRESET_DIR, exist_ok=True)
 
 
@@ -42,37 +36,67 @@ def web_dir() -> str:
 
 
 class Job(pipeline.Reporter):
-    """NOTE: internal attrs are `phase`/`frac` ON PURPOSE - naming them
-    `stage`/`progress` would shadow the Reporter METHODS of those names."""
+    """Internal attrs phase/frac ON PURPOSE - naming them stage/progress
+    would shadow the Reporter methods."""
 
     def __init__(self, url: str, settings: Settings):
         self.id = uuid.uuid4().hex[:12]
         self.url, self.s = url, settings
-        self.state = "queued"
-        self.phase = "queued"
+        self.state, self.phase = "queued", "queued"
         self.title = ""
         self.frac = 0.0
+        self.scan_frac = 0.0
         self.logs = collections.deque(maxlen=600)
         self.moments: list = []
         self.series = None
+        self.last_series = None
         self.clips: list = []
         self.error: str | None = None
+        self.media_url = ""
+        self.duration = 0.0
         self.stop_evt = threading.Event()
+        self._sel_q: "_queue.Queue" = _queue.Queue()
+        self._cmd_q: "_queue.Queue" = _queue.Queue()
 
-    # ---- Reporter interface (these MUST stay callable) ----
     def log(self, m): self.logs.append(str(m))
     def stage(self, n): self.phase = str(n); self.log("> " + str(n))
     def progress(self, f): self.frac = max(self.frac, min(float(f or 0), 1))
+    def progress_scan(self, f): self.scan_frac = min(float(f or 0), 1)
     def moment(self, m): self.moments.append(m)
-    def set_series(self, s): self.series = s
+    def set_series(self, s): self.last_series = s
     def clip(self, c): self.clips.append(c)
+    def media_ready(self, key, fname, dur):
+        self.media_url = "/media/" + urllib.parse.quote(key + "/" + fname)
+        self.duration = float(dur or 0)
+    def review(self, moments, series):
+        self.moments = moments
+        if series:
+            self.series = series
+        self.phase = "review"
+
+    def wait_selection(self):
+        self.phase = "awaiting_selection"
+        return self._sel_q.get()
+    def wait_command(self):
+        self.phase = "awaiting_command"
+        return self._cmd_q.get()
 
     def snapshot(self):
         return {"id": self.id, "state": self.state, "stage": self.phase,
                 "title": self.title, "progress": round(self.frac, 3),
+                "scan_frac": round(self.scan_frac, 3),
+                "media_url": self.media_url,
+                "duration": round(self.duration, 1),
                 "error": self.error, "moments": self.moments,
                 "series": self.series, "clips": self.clips,
                 "logs": list(self.logs)[-300:]}
+
+    def select(self, mode: str, rect):
+        self.scan_frac = 0.0
+        self._sel_q.put({"mode": mode, "rect": rect})
+
+    def command(self, kind: str, value=None):
+        self._cmd_q.put((kind, value))
 
 
 class StartReq(BaseModel):
@@ -94,8 +118,15 @@ def start_job(req: StartReq):
         CaptionStyle(cap).save_active()
     s.update(req.options)
     try:
-        json.dump({k: getattr(s, k) for k in _LAST_KEYS},
-                  open(LAST_OPTS_PATH, "w", encoding="utf-8"))
+        json.dump({k: getattr(s, k) for k in (
+            "mode", "max_clips", "clip_duration", "pre_roll",
+            "hype_threshold", "cooldown", "max_height", "fps", "gpu",
+            "workers", "aspect", "smart_reframe", "fx_look", "bloom",
+            "grain", "vignette", "zoom_punch", "zoom_strength", "shake",
+            "beat_sync", "flash_intro", "progress_bar", "autocaptions",
+            "whisper_model", "sfx_enabled", "sfx_volume_db",
+            "music_volume_db", "duck_music")},
+            open(LAST_OPTS_PATH, "w", encoding="utf-8"))
     except Exception:
         pass
     job = Job(req.url.strip(), s)
@@ -136,6 +167,30 @@ def stop_job(job_id: str):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{job_id}/select")
+def job_select(job_id: str, body: dict):
+    if job_id not in jobs:
+        raise HTTPException(404)
+    jobs[job_id].select(body.get("mode", "audio"), body.get("rect"))
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/rescan")
+def job_rescan(job_id: str, body: dict):
+    if job_id not in jobs:
+        raise HTTPException(404)
+    jobs[job_id].command("rescan", body.get("threshold", 3.0))
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/confirm")
+def job_confirm(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(404)
+    jobs[job_id].command("confirm")
+    return {"ok": True}
+
+
 @app.post("/api/export")
 def start_export(body: dict):
     from . import platforms
@@ -146,8 +201,10 @@ def start_export(body: dict):
     src = os.path.join(Settings().out_dir, fname)
     if not os.path.isfile(src):
         raise HTTPException(404, "clip not found")
-    ex = {"id": uuid.uuid4().hex[:10], "state": "running", "platform": platform,
-          "logs": collections.deque(maxlen=100), "result": None, "error": None}
+    ex = {"id": uuid.uuid4().hex[:10], "state": "running",
+          "platform": platform,
+          "logs": collections.deque(maxlen=100), "result": None,
+          "error": None}
 
     class Rep:
         @staticmethod
@@ -202,8 +259,8 @@ def reveal(body: dict):
         raise HTTPException(404)
     if sys.platform == "win32":
         subprocess.Popen(["explorer", "/select,", os.path.normpath(path)]
-                         if os.path.isfile(path) else ["explorer",
-                                                       os.path.normpath(path)])
+                         if os.path.isfile(path)
+                         else ["explorer", os.path.normpath(path)])
     elif sys.platform == "darwin":
         subprocess.Popen(["open", "-R", path])
     else:
@@ -213,7 +270,8 @@ def reveal(body: dict):
 
 @app.post("/api/reveal_clip")
 def reveal_clip(body: dict):
-    path = os.path.join(Settings().out_dir, os.path.basename(body.get("file", "")))
+    path = os.path.join(Settings().out_dir,
+                        os.path.basename(body.get("file", "")))
     if not os.path.isfile(path):
         raise HTTPException(404)
     if sys.platform == "win32":
@@ -231,7 +289,6 @@ def meta():
             "manifest_configured": bool(updater.MANIFEST_URL)}
 
 
-# ------------------------- captions -------------------------
 @app.get("/api/caption/defaults")
 def caption_defaults():
     return DEFAULTS
@@ -304,7 +361,6 @@ def caption_delete(name: str):
     return {"ok": True}
 
 
-# --------------- code update channel ---------------
 @app.get("/api/update/files")
 def update_files():
     return [{"path": p} for p in updater.module_list()]
@@ -415,11 +471,16 @@ def system_restart():
     return {"ok": True}
 
 
+app.include_router(branding_router)
+
+
 @app.get("/")
 def index():
     return FileResponse(os.path.join(web_dir(), "index.html"))
 
 
 Settings().ensure_dirs()
+os.makedirs(Settings().work_dir, exist_ok=True)
 app.mount("/clips", StaticFiles(directory=Settings().out_dir), name="clips")
+app.mount("/media", StaticFiles(directory=Settings().work_dir), name="media")
 app.mount("/static", StaticFiles(directory=web_dir()), name="static")
