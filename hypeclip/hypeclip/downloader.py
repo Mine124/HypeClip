@@ -16,6 +16,15 @@ def _remux_for_browser(path: str, reporter) -> str:
     return out
 
 
+def _bundled_ffmpeg_dir() -> str | None:
+    """Point yt-dlp at our bundled FFmpeg (it only searches PATH otherwise)."""
+    try:
+        from .utils import resolve_bin
+        return os.path.dirname(resolve_bin("ffmpeg"))
+    except Exception:
+        return None
+
+
 def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
     import yt_dlp
     os.makedirs(out_dir, exist_ok=True)
@@ -53,6 +62,9 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
         "concurrent_fragment_downloads": 4,
         "progress_hooks": [hook],
     }
+    ffd = _bundled_ffmpeg_dir()
+    if ffd:
+        opts["ffmpeg_location"] = ffd
     if settings.cookies_browser:
         opts["cookiesfrombrowser"] = (settings.cookies_browser,)
 
