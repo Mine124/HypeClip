@@ -42,6 +42,14 @@ def _zoom_expression(punch_t: float, fps: int, punch_amp: float,
     return "min(2.4,max(1.0,1+" + "+".join(terms) + "))"
 
 
+_SUB_POS = {
+    "tl": "x=28:y=28",
+    "tr": "x=W-w-28:y=28",
+    "bl": "x=28:y=H-h-28",
+    "br": "x=W-w-28:y=H-h-28",
+}
+
+
 def render_clip(plan: dict, reporter) -> None:
     dur = float(plan["dur"])
     fps = int(plan["fps"])
@@ -49,7 +57,10 @@ def render_clip(plan: dict, reporter) -> None:
     g = Graph()
     music = plan.get("music") or {}
     sfx_events = plan.get("sfx_events") or []
+    sub = plan.get("subscribe") or {}
     has_music = bool(music.get("file"))
+    has_wm = bool(plan.get("watermark"))
+    has_sub = bool(sub.get("file")) and os.path.isfile(sub["file"])
 
     # ---------------- layout ----------------
     if plan["aspect"] != "16:9":
@@ -57,7 +68,8 @@ def render_clip(plan: dict, reporter) -> None:
         cmd_file = plan.get("sendcmd")
         if plan["smart_reframe"] and cmd_file:
             cw, ch = reframe.write_sendcmd(plan["src"], plan["start"], dur,
-                                           src_w, src_h, plan["aspect"], cmd_file)
+                                           src_w, src_h, plan["aspect"],
+                                           cmd_file)
             g.step(f"sendcmd=f={ff_filter_path(cmd_file)}")
             g.step(f"crop={cw}:{ch}:x='(iw-ow)/2':y=(ih-oh)/2")
         else:
@@ -80,7 +92,8 @@ def render_clip(plan: dict, reporter) -> None:
     if punch_amp > 0 or kicks:
         ss = 1.6 if punch_amp > 0 else 1.25
         g.step(f"scale={int(W * ss) // 2 * 2}:-2:flags=lanczos")
-        zexpr = _zoom_expression(float(plan["impact_t"]), fps, punch_amp, kicks,
+        zexpr = _zoom_expression(float(plan["impact_t"]), fps, punch_amp,
+                                 kicks,
                                  0.10 + 0.10 * float(plan["zoom_strength"]))
         g.step(f"zoompan=z='{zexpr}'"
                f":x='iw/2-(iw/zoom)/2':y='ih/2-(ih/zoom)/2'"
@@ -133,17 +146,36 @@ def render_clip(plan: dict, reporter) -> None:
                f":borderw={max(3, H // 200)}:bordercolor=black@0.65"
                f":x='(w-text_w)/2':y='{yexpr}':alpha='{alpha}'")
     if plan.get("progress_bar"):
-        g.step(f"drawbox=x=0:y=ih-8:w=iw:h=8:color=black@0.35:t=fill")
+        g.step("drawbox=x=0:y=ih-8:w=iw:h=8:color=black@0.35:t=fill")
         g.step(f"drawbox=x=0:y=ih-7:w='iw*clip(t/{dur:.2f}\\,0\\,1)':h=6:"
                f"color=white@0.85:t=fill")
 
-    if plan.get("watermark"):
+    if has_wm:
         wmi = 1 + len(sfx_events) + (1 if has_music else 0)
         nxt = "wmov"
         g.parts.append(
             f"[{g.cur}][{wmi}:v]overlay=x=W-w-28:y=28"
             f":enable='between(t,0.4,{dur:.2f})'[{nxt}]")
         g.cur = nxt
+
+    # ---- cartoon subscribe stamp (bobs up/down while visible) ----
+    if has_sub:
+        sii = 1 + len(sfx_events) + (1 if has_music else 0) \
+            + (1 if has_wm else 0)
+        t0 = float(sub.get("t0", 0.5))
+        sdur = float(sub.get("dur", 4.0))
+        t1 = min(dur - 0.2, t0 + sdur)
+        pos = _SUB_POS.get(sub.get("pos", "br"), _SUB_POS["br"])
+        amp = int(H * 0.03) + 10
+        y_bob = f"+{amp}*abs(sin(2.6*(t-{t0:.2f})))"
+        pos_expr = pos + y_bob
+        enable = f"between(t,{t0:.2f},{t1:.2f})"
+        g.parts.append(
+            f"[{sii}:v]scale=iw*0.26:-1,format=rgba[simg];")
+        g.parts.append(
+            f"[{g.cur}][simg]overlay={pos_expr}"
+            f":enable='{enable}'[subov]")
+        g.cur = "subov"
 
     if plan.get("subs"):
         g.step(f"ass={ff_filter_path(plan['subs'])}")
@@ -194,8 +226,10 @@ def render_clip(plan: dict, reporter) -> None:
         cmd += ["-i", ev["file"]]
     if has_music:
         cmd += ["-stream_loop", "-1", "-i", music["file"]]
-    if plan.get("watermark"):
+    if has_wm:
         cmd += ["-loop", "1", "-i", plan["watermark"]]
+    if has_sub:
+        cmd += ["-loop", "1", "-i", sub["file"]]
     cmd += ["-filter_complex", fc,
             "-map", f"[{g.cur}]", "-map", f"[{final_a}]",
             *enc,
@@ -203,5 +237,6 @@ def render_clip(plan: dict, reporter) -> None:
             "-movflags", "+faststart", "-threads", "0",
             plan["dest"]]
     gpu_tag = " nvenc" if any("nvenc" in x for x in enc) else ""
-    reporter.log(f"FX render ({plan.get('look')}{gpu_tag})...")
+    reporter.log(f"FX render ({plan.get('look')}{gpu_tag})"
+                 + (" +subscribe" if has_sub else ""))
     run(cmd)
