@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.2.2"
+APP_VERSION = "3.2.4"
 
 
 def resource_dir() -> str:
@@ -33,7 +33,7 @@ class Settings:
     # --- clip selection ---
     mode: str = "auto"
     max_clips: int = 5
-    clip_duration: float = 30.0
+    clip_duration: float = 90.0
     pre_roll: float = 8.0
     hype_threshold: float = 3.0
     cooldown: float = 90.0
@@ -61,7 +61,7 @@ class Settings:
     watermark_file: str = ""
     # --- captions ---
     autocaptions: bool = True
-    caption_style: str = "karaoke"
+    caption_style: str = "tiktok"
     whisper_model: str = "small"
     # --- audio ---
     sfx_enabled: bool = True
@@ -76,6 +76,8 @@ class Settings:
     sub_dur: float = 4.0
     # --- scanner ---
     scan_fps: int = 6
+    # --- local upload ---
+    uploaded_file: str = ""
     # --- io ---
     out_dir: str = os.path.join(DATA_DIR, "output")
     work_dir: str = os.path.join(DATA_DIR, "work")
