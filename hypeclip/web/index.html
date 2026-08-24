@@ -1,6 +1,14 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>HypeClip Studio</title><link rel="stylesheet" href="/static/styles.css"/>
+<style>
+.uploaddrop{margin-top:10px;border:2px dashed rgba(255,255,255,.18);
+ border-radius:12px;padding:14px;text-align:center;color:#8b93a7;
+ font-size:13px;cursor:pointer;transition:.15s}
+.uploaddrop:hover,.uploaddrop.drag{border-color:#7c5cff;color:#dbe2f2;
+ background:#7c5cff11}
+.uploaddrop b{color:#cbd5f5}
+</style>
 </head><body>
 <div class="bg-mesh"></div>
 <header class="topbar">
@@ -15,19 +23,25 @@
 <main>
 <section class="card hero">
   <h1>Turn any stream into clips.</h1>
-  <p>Paste a link. Draw a box over the chat. HypeClip watches how fast it
-     scrolls — when chat goes supernova, that becomes a clip.
-     Default output: <b>9:16 · 1080p · 60fps</b>.</p>
+  <p>Paste a link — or drop in a video you downloaded yourself. Draw a box over
+     the chat; when it scrolls supernova-fast, that becomes a clip.
+     Default output: <b>9:16 · 1080p · 60fps · 90s · TikTok captions</b>.</p>
   <div class="srcrow">
     <input id="urlInput" spellcheck="false"
       placeholder="YouTube · Twitch VOD · TikTok · any video link..."/>
     <button id="goBtn" class="cta">Open wizard<span class="kbd">Ctrl↵</span></button>
   </div>
+  <div class="uploaddrop" id="dropZone">
+    📁 <b>or upload a video file</b> — drag it here or click to browse
+    (mp4 / mkv / webm / mov · skips the download stage entirely)
+    <input type="file" id="fileInput" hidden
+      accept="video/*,.mp4,.mkv,.webm,.mov,.ts"/>
+  </div>
   <details class="panel" open><summary>Render settings</summary>
     <div class="grid">
       <label>Clips<input id="optClips" type="number" min="1" max="20" value="5"/></label>
-      <label>Length <b class="val"><output id="durOut">30</output>s</b>
-        <input id="optDur" type="range" min="15" max="120" value="30"/></label>
+      <label>Length <b class="val"><output id="durOut">90</output>s</b>
+        <input id="optDur" type="range" min="15" max="180" value="90"/></label>
       <label>Pre-roll <b class="val"><output id="preOut">8</output>s</b>
         <input id="optPre" type="range" min="0" max="30" value="8"/></label>
       <label>Sensitivity <b class="val"><output id="senOut">3</output></b>
@@ -40,8 +54,10 @@
         <button data-a="16:9">16:9</button>
         <button data-a="9:16" class="active">9:16</button>
         <button data-a="1:1">1:1</button></div></label>
-      <label>Captions<select id="optCapStyle"><option value="karaoke">Karaoke</option>
-        <option value="tiktok">TikTok</option><option value="clean">Clean</option></select></label>
+      <label>Captions<select id="optCapStyle">
+        <option value="karaoke">Karaoke</option>
+        <option value="tiktok" selected>TikTok blocks</option>
+        <option value="clean">Clean</option></select></label>
       <label class="sw"><input id="optCaps" type="checkbox" checked/><i></i>Captions</label>
       <label class="sw"><input id="optSfx" type="checkbox" checked/><i></i>SFX</label>
       <label class="sw"><input id="optZoom" type="checkbox" checked/><i></i>Zoom punch</label>
@@ -95,7 +111,7 @@
     <p id="drawHint" class="hint hidden">Drag a rectangle around the chat panel.
       Include a little padding. Redraw anytime.</p>
     <div class="pbar slim"><div id="prepFill"></div></div>
-    <p class="hint" id="prepTxt">fetching video…</p>
+    <p class="hint" id="prepTxt">waiting for video…</p>
   </div>
 
   <div class="wpanel hidden" id="wp2">
