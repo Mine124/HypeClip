@@ -388,3 +388,79 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  }
  watchGrid("clipsGrid");watchGrid("wizClips");
 })();
+/* ======== Wizard Back / Next navigation (view-only, progress-gated) ======== */
+(function(){
+ const st=document.createElement("style");st.textContent=`
+ .wiz-nav{display:flex;align-items:center;gap:10px;margin-top:18px;
+  border-top:1px dashed var(--line);padding-top:14px}
+ #wizPos{font-size:12px}`;
+ document.head.append(st);
+
+ const card=document.querySelector(".wiz-card");
+ if(!card)return;
+ const bar=document.createElement("div");bar.className="wiz-nav";
+ bar.innerHTML=`<button id="wizBack" class="mini-btn">&#9664; Back</button>
+  <span id="wizPos" class="dim"></span><span class="flex1"></span>
+  <button id="wizFwd" class="mini-btn accent">Next &#9654;</button>`;
+ card.append(bar);
+
+ let maxStep=1,prevJob=null;
+
+ /* wrap setStep so the nav bar stays in sync wherever steps change from */
+ const _setStep=setStep;
+ setStep=function(n){
+  n=Math.max(1,Math.min(4,n|0));
+  if(n>maxStep)maxStep=n;
+  _setStep(n);
+  const pos=$("#wizPos"),f=$("#wizFwd"),b=$("#wizBack");
+  if(pos)pos.textContent=`step ${wizStep} of 4`;
+  if(f)f.disabled=wizStep>=maxStep;
+  if(b)b.disabled=wizStep<=1;
+ };
+
+ /* how far forward the SERVER says we've earned */
+ async function serverMax(){
+  if(!jobId)return 1;
+  try{
+   const j=await(await fetch("/api/jobs/"+jobId)).json();
+   const s=j.stage||"";
+   if(j.state==="error")return maxStep;
+   if(s==="clip"||s==="done"||(j.clips&&j.clips.length))return 4;
+   if(s==="review"||s==="awaiting_command")return 3;
+   if(s==="scan")return 2;
+   return 1;
+  }catch(e){return 1;}
+ }
+
+ $("#wizBack").onclick=()=>{
+  if(wizStep>1){setStep(wizStep-1);toast("viewing step "+wizStep+" — nothing restarted");}
+ };
+ $("#wizFwd").onclick=async()=>{
+  const cap=await serverMax();
+  if(wizStep>=cap){
+   const why={1:"the video is still downloading",
+              2:"no scan has finished yet",
+              3:"review your peaks and click Render clips first"}[cap]
+             ||"finish this step first";
+   return toast("can't skip ahead — "+why,"err");}
+  setStep(Math.min(4,wizStep+1));
+ };
+
+ /* arrow keys work too, when the popup is open */
+ addEventListener("keydown",e=>{
+  if($("#wiz").classList.contains("hidden"))return;
+  const t=document.activeElement&&document.activeElement.tagName;
+  if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;
+  if(e.key==="ArrowLeft")$("#wizBack").click();
+  if(e.key==="ArrowRight")$("#wizFwd").click();
+ });
+
+ /* new job -> nav resets to step 1 */
+ setInterval(()=>{
+  if(jobId!==prevJob){prevJob=jobId;if(jobId){maxStep=1;setStep(1);}}
+ },800);
+
+ /* opening the popup re-syncs position + labels immediately */
+ const _open=openWizard;
+ openWizard=function(){_open();if(typeof wizStep==="number")setStep(wizStep);};
+})();
