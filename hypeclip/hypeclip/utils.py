@@ -10,12 +10,28 @@ import unicodedata
 from .config import BUNDLED_ASSETS
 
 _BIN_CACHE: dict[str, str | None] = {}
+_PATH_INJECTED = {"done": False}
 
 
 def _bundled(name: str) -> str | None:
     cand = os.path.normpath(
         os.path.join(os.path.dirname(BUNDLED_ASSETS), "bin", name))
     return cand if os.path.isfile(cand) else None
+
+
+def _inject_path(folder: str):
+    """Make the bundled-binary folder visible to EVERYTHING in this process
+    (and to child processes) - yt-dlp, ffmpeg autodetect, subprocesses."""
+    if _PATH_INJECTED["done"] or not folder:
+        return
+    try:
+        cur = os.environ.get("PATH", "")
+        if folder.lower() not in cur.lower():
+            os.environ["PATH"] = folder + os.pathsep + cur
+        _PATH_INJECTED["done"] = True
+        print(f"[hypeclip] media tools folder on PATH: {folder}", flush=True)
+    except Exception:
+        pass
 
 
 def resolve_bin(name: str) -> str:
@@ -28,6 +44,10 @@ def resolve_bin(name: str) -> str:
             found = imageio_ffmpeg.get_ffmpeg_exe()
         except Exception:
             pass
+    if found:
+        _inject_path(os.path.dirname(found))
+        if _BIN_CACHE.get("__announced__") != name:
+            print(f"[hypeclip] using {name}: {found}", flush=True)
     _BIN_CACHE[name] = found
     if not found:
         raise RuntimeError(f"'{name}' not found. Install FFmpeg or reinstall HypeClip.")
@@ -95,7 +115,8 @@ _NVENC = {"checked": False, "ok": False}
 def has_nvenc() -> bool:
     if not _NVENC["checked"]:
         try:
-            out = subprocess.run([resolve_bin("ffmpeg"), "-hide_banner", "-encoders"],
+            out = subprocess.run([resolve_bin("ffmpeg"), "-hide_banner",
+                                  "-encoders"],
                                  capture_output=True, text=True).stdout
             _NVENC["ok"] = "h264_nvenc" in out
         except Exception:
