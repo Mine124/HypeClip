@@ -30,9 +30,30 @@ $("#folderBtn").onclick=()=>fetch("/api/meta").then(r=>r.json()).then(m=>
  fetch("/api/reveal",{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify({path:m.out_dir})}));
 
-/* ---------- wizard core ---------- */
+/* ---------- wizard open/close (view-only toggling) ---------- */
 function openWizard(){$("#wiz").classList.remove("hidden");}
-$("#wizClose").onclick=()=>$("#wiz").classList.add("hidden");
+function closeWizard(){$("#wiz").classList.add("hidden");}
+$("#wizClose").onclick=closeWizard;
+
+/* REOPEN BUTTON: lives in the header, works anytime, NEVER starts a job */
+(function(){
+ const b=document.createElement("button");
+ b.className="ghost-btn";b.id="wizToggleBtn";
+ b.textContent="🎛 Wizard";
+ b.title="Show / hide the job wizard";
+ b.onclick=()=>{
+   const w=$("#wiz");
+   w.classList.toggle("hidden");
+   if(!w.classList.contains("hidden")&&typeof wizStep==="number")setStep(wizStep);
+ };
+ const hr=document.querySelector(".head-right");
+ if(hr)hr.prepend(b);
+})();
+
+/* clicking outside the card also closes (reopen via 🎧 button) */
+$("#wiz").addEventListener("mousedown",e=>{
+ if(e.target.id==="wiz")closeWizard();});
+
 function setStep(n){wizStep=n;
  $$(".wstep").forEach(s=>{const k=+s.dataset.w;
   s.classList.toggle("active",k===n);s.classList.toggle("done",k<n);});
@@ -109,7 +130,7 @@ function line(cv,score,color){
  ctx.strokeStyle=color;ctx.lineWidth=1.5*dpr;
  ctx.shadowColor="#7c5cff";ctx.shadowBlur=8*dpr;ctx.stroke();}
 
-/* ---------- master poll (runs forever, cheap when idle) ---------- */
+/* ---------- master poll ---------- */
 timer=setInterval(async()=>{
  if(!jobId)return;
  let j;try{j=await(await fetch("/api/jobs/"+jobId)).json();}catch(e){return;}
@@ -120,14 +141,12 @@ timer=setInterval(async()=>{
  const st=j.stage;
  syncStepFromServer(st);
 
- /* step 1 helper text */
  if(st==="awaiting_selection"){
    $("#prepFill").style.width="100%";
    $("#prepTxt").textContent=j.duration?
      `video ready (${Math.round(j.duration/60)} min) — draw over the chat!`
      :"fetching video…";}
 
- /* scan radar - reflects SERVER value; popup open/close cannot move it */
  if(st==="scan"){
    $("#btnScan").dataset.scanning="1";
    $("#scanPct").textContent=Math.round((j.scan_frac||0)*100)+"%";
@@ -177,7 +196,7 @@ function addClip(c,sel){
  el.onmouseleave=()=>{v.pause();v.currentTime=0;};
  grid.prepend(el);}
 
-/* ---------- start job (single-instance guarded) ---------- */
+/* ---------- start job ---------- */
 async function start(){
  if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
  const url=$("#urlInput").value.trim();
@@ -281,8 +300,10 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
     el.style.setProperty("--fill",((el.value-2)/28*100)+"%");};
    el.addEventListener("input",setF);setF();
   }}catch(e){}
+})();
 
- /* wrap start() to attach branding + scan fps, keeping the guard */
+/* wrap start() to attach branding + scan fps, keeping the guard */
+(function(){
  const _orig=start;
  start=async function(){
   if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
@@ -305,7 +326,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   $("#btnScan").dataset.scanning="0";
   $("#clipsGrid").innerHTML="";
   setStep(1);openWizard();};
- $("#goBtn").onclick=start;   /* rebind so the button uses the wrapped version */
+ $("#goBtn").onclick=start;
 })();
 
 /* ======== Export menu: multi-format downloads ======== */
@@ -388,6 +409,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  }
  watchGrid("clipsGrid");watchGrid("wizClips");
 })();
+
 /* ======== Wizard Back / Next navigation (view-only, progress-gated) ======== */
 (function(){
  const st=document.createElement("style");st.textContent=`
@@ -406,7 +428,6 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
 
  let maxStep=1,prevJob=null;
 
- /* wrap setStep so the nav bar stays in sync wherever steps change from */
  const _setStep=setStep;
  setStep=function(n){
   n=Math.max(1,Math.min(4,n|0));
@@ -418,7 +439,6 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   if(b)b.disabled=wizStep<=1;
  };
 
- /* how far forward the SERVER says we've earned */
  async function serverMax(){
   if(!jobId)return 1;
   try{
@@ -433,7 +453,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  }
 
  $("#wizBack").onclick=()=>{
-  if(wizStep>1){setStep(wizStep-1);toast("viewing step "+wizStep+" — nothing restarted");}
+  if(wizStep>1){setStep(wizStep-1);}
  };
  $("#wizFwd").onclick=async()=>{
   const cap=await serverMax();
@@ -446,7 +466,6 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   setStep(Math.min(4,wizStep+1));
  };
 
- /* arrow keys work too, when the popup is open */
  addEventListener("keydown",e=>{
   if($("#wiz").classList.contains("hidden"))return;
   const t=document.activeElement&&document.activeElement.tagName;
@@ -455,12 +474,11 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   if(e.key==="ArrowRight")$("#wizFwd").click();
  });
 
- /* new job -> nav resets to step 1 */
  setInterval(()=>{
   if(jobId!==prevJob){prevJob=jobId;if(jobId){maxStep=1;setStep(1);}}
  },800);
 
- /* opening the popup re-syncs position + labels immediately */
+ /* reopening the popup restores the correct step */
  const _open=openWizard;
  openWizard=function(){_open();if(typeof wizStep==="number")setStep(wizStep);};
 })();
