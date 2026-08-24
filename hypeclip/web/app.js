@@ -271,3 +271,86 @@ function addClip(c,sel){
   jobId=(await res.json()).job_id;mediaSet=false;
   $("#clipsGrid").innerHTML="";openWizard();};
 })();
+/* ======== Export menu: multi-format downloads ======== */
+(function(){
+ const FORMATS=[
+  ["tiktok","TikTok · 9:16 · 1080p60"],
+  ["shorts","Shorts · 9:16 · 1080p60"],
+  ["reels","Reels · 9:16 · 1080p60"],
+  ["youtube","YouTube · 16:9 · 1080p60"],
+  ["square","Square 1:1 · 1080p60"],
+  ["hd720","MP4 · 720p60"],
+  ["sd480","MP4 · 480p30 (small file)"],
+  ["webm_hd","WebM · 1080p60"]];
+ const label=id=>(FORMATS.find(f=>f[0]===id)||["","?"])[1];
+
+ const st=document.createElement("style");st.textContent=`
+ .exp-menu{position:fixed;z-index:70;background:#0d1019;
+  border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:8px;
+  display:flex;flex-direction:column;gap:4px;width:250px;
+  box-shadow:0 20px 50px -12px #000d}
+ .exp-menu button{background:#141827;border:none;color:#dbe2f2;text-align:left;
+  padding:9px 11px;border-radius:8px;font-size:12.5px;cursor:pointer}
+ .exp-menu button:hover{background:#7c5cff33;color:#fff}
+ .exp-menu button:disabled{opacity:.55;cursor:wait}`;
+ document.head.append(st);
+
+ const menu=document.createElement("div");
+ menu.className="exp-menu hidden";
+ menu.innerHTML=FORMATS.map(([id,l])=>`<button data-plat="${id}">${l}</button>`).join("");
+ document.body.append(menu);
+
+ let curFile=null;
+ document.addEventListener("click",e=>{
+  const btn=e.target.closest("[data-export]");
+  if(btn){
+   if(btn.tagName==="A")e.preventDefault();
+   curFile=btn.getAttribute("data-export");
+   const r=btn.getBoundingClientRect();
+   menu.style.left=Math.max(8,Math.min(r.left,innerWidth-266))+"px";
+   menu.style.top=Math.max(8,Math.min(r.bottom+6,innerHeight-380))+"px";
+   menu.classList.toggle("hidden");return;}
+  if(!e.target.closest(".exp-menu"))menu.classList.add("hidden");
+ });
+
+ async function runExport(plat,fileBtn){
+  fileBtn.disabled=true;const orig=fileBtn.textContent;
+  fileBtn.textContent="rendering…";
+  try{
+   const res=await(await fetch("/api/export",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({file:curFile,platform:plat})})).json();
+   const tick=setInterval(async()=>{
+    const s=await(await fetch("/api/export/"+res.export_id)).json();
+    if(s.state==="done"){clearInterval(tick);
+     toast(plat.toUpperCase()+" exported 📦","ok");
+     addClip(s.result,"#clipsGrid");
+     fileBtn.textContent=orig;fileBtn.disabled=false;
+     menu.classList.add("hidden");}
+    else if(s.state==="error"){clearInterval(tick);
+     toast(s.error,"err");
+     fileBtn.textContent=orig;fileBtn.disabled=false;}},1200);
+  }catch(err){toast(String(err),"err");
+   fileBtn.textContent=orig;fileBtn.disabled=false;}
+ }
+ menu.addEventListener("click",e=>{
+  const b=e.target.closest("button[data-plat]");
+  if(b&&curFile)runExport(b.dataset.plat,b);
+ });
+
+ /* inject an Export button into every clip card, present and future */
+ function watchGrid(gridId){
+  const grid=document.getElementById(gridId);if(!grid)return;
+  const decorate=()=>grid.querySelectorAll(".clip:not([data-exp])").forEach(card=>{
+   card.dataset.exp="1";
+   const btns=card.querySelector(".btns"),file=card.dataset.f;
+   if(!btns||!file)return;
+   const ex=document.createElement("button");
+   ex.className="icon-btn";ex.textContent="export ⬇";
+   ex.setAttribute("data-export",file);
+   btns.prepend(ex);});
+  decorate();
+  new MutationObserver(decorate).observe(grid,{childList:true});
+ }
+ watchGrid("clipsGrid");watchGrid("wizClips");
+})();
