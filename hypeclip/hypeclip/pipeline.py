@@ -33,8 +33,13 @@ def run(url: str, settings: Settings, r: Reporter, stop: threading.Event | None 
     which_ffmpeg()
     settings.ensure_dirs()
     sfx.ensure_defaults(settings.sfx_dir, r)
-    r.stage("resolve")
 
+    # ---- local upload path: skip link resolution & download entirely ----
+    up = getattr(settings, "uploaded_file", "")
+    if up and os.path.isfile(up):
+        return _local_file(up, settings, r, stop)
+
+    r.stage("resolve")
     plat = sources.detect(url)
     r.log(f"source platform: {plat['platform']}")
     info = youtube.video_info(url, settings)
@@ -44,7 +49,7 @@ def run(url: str, settings: Settings, r: Reporter, stop: threading.Event | None 
     if info["is_live"]:
         if plat["platform"] == "tiktok":
             raise ValueError("TikTok LIVE isn't supported - paste a posted "
-                             "TikTok video instead.")
+                             "TikTok video or upload the file yourself.")
         return _live(url, info, settings, r, stop)
     return _vod(url, info, plat, settings, r, stop)
 
@@ -168,6 +173,24 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     return clip
 
 
+def _local_file(path: str, settings: Settings, r: Reporter,
+                stop: threading.Event | None):
+    """User-uploaded video: no link, no download - go straight to wizard."""
+    r.stage("resolve")
+    title = os.path.splitext(os.path.basename(path))[0]
+    r.log(f"local file: {title}  [{fmt_ts(probe_duration(path))}]")
+    dur = probe_duration(path)
+    key = safe_name(title) or "upload"
+    work = os.path.join(settings.work_dir, key)
+    os.makedirs(work, exist_ok=True)
+    ext = os.path.splitext(path)[1].lower() or ".mp4"
+    dest = os.path.join(work, key + ext)
+    if os.path.abspath(dest) != os.path.abspath(path):
+        shutil.copyfile(path, dest)
+    r.media_ready(key, os.path.basename(dest), dur)
+    return _scan_and_render(dest, dur, title, settings, r, stop)
+
+
 def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
     r.stage("download")
     key = info.get("id") or safe_name(info.get("title") or "media")
@@ -178,6 +201,15 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
         progress_cb=lambda f: r.progress(0.02 + 0.43 * (f or 0)))
     dur = probe_duration(path)
     r.media_ready(key, os.path.basename(path), dur)
+    return _scan_and_render(path, dur, info["title"], settings, r, stop)
+
+
+def _scan_and_render(media_path, dur, title, settings: Settings,
+                     r: Reporter, stop):
+    """Shared wizard loop: select rect -> scan -> review -> render."""
+    src_h = min(settings.max_height, probe_dims(media_path)[1])
+    ctx = {"work": os.path.dirname(media_path), "media": media_path,
+           "dims": _dims_for(settings.aspect, src_h)}
 
     moments = []
     while True:
@@ -187,13 +219,13 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
         r.stage("scan")
         r.progress(0.46)
         if sel.get("mode") == "audio":
-            analyzer = audiohype.AudioHypeAnalyzer(settings, path)
+            analyzer = audiohype.AudioHypeAnalyzer(settings, media_path)
             moments = _analyze(analyzer, settings, r, dur)
         else:
             rc = sel["rect"]
             analyzer = scan.ScrollScanner(
-                settings, path, (rc["x"], rc["y"], rc["w"], rc["h"]), r,
-                sample_fps=float(getattr(settings, "scan_fps", 6)))
+                settings, media_path, (rc["x"], rc["y"], rc["w"], rc["h"]),
+                r, sample_fps=float(getattr(settings, "scan_fps", 6)))
             moments = _analyze(analyzer, settings, r, dur)
         r.progress(0.50)
 
@@ -208,9 +240,6 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
             continue
         break
 
-    src_h = min(settings.max_height, probe_dims(path)[1])
-    ctx = {"work": work, "media": path, "dims": _dims_for(settings.aspect, src_h)}
-
     r.stage("clip")
     ordered = sorted(moments, key=lambda m: m.start)[: int(settings.max_clips)]
     clips: list = [None] * len(ordered)
@@ -218,7 +247,7 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
     def job(im):
         i, m = im
         return i, _finish_clip(ctx, m.start, m.end - m.start, i,
-                               info["title"], m.score, settings, r)
+                               title, m.score, settings, r)
 
     workers = max(1, min(int(settings.workers), 3))
     if workers > 1 and len(ordered) > 1:
@@ -231,8 +260,6 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
             r.progress(0.52 + 0.46 * i / max(1, len(ordered)))
             _, clips[i] = job((i, m))
 
-    if not settings.keep_temp:
-        shutil.rmtree(work, ignore_errors=True)
     r.stage("done")
     r.progress(1.0)
     return [c for c in clips if c]
@@ -327,3 +354,4 @@ def _live(url, info, settings: Settings, r: Reporter, stop):
     r.stage("done")
     r.progress(1.0)
     return clips
+    
