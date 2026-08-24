@@ -87,9 +87,19 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
         "retries": 8,
         "fragment_retries": 8,
         "concurrent_fragment_downloads": 2,
-        "nopart": True,          # <-- no .part rename at the end = no lock race
+        # --- the 416 fix: never resume from stale partial state ---
+        "nopart": True,
+        "continuedl": False,
         "progress_hooks": [hook],
     }
+    # wipe stale leftovers from earlier crashes - they cause HTTP 416
+    for junk in (glob.glob(os.path.join(out_dir, "*.part"))
+                 + glob.glob(os.path.join(out_dir, "*.ytdl"))):
+        try:
+            os.remove(junk)
+        except OSError:
+            pass
+
     ffd = _bundled_ffmpeg_dir()
     if ffd:
         opts["ffmpeg_location"] = ffd
