@@ -6,7 +6,6 @@ import time
 
 
 def _clean(s: str) -> str:
-    """Strip yt-dlp's ANSI color codes from progress strings."""
     return re.sub(r"\x1b\[[0-9;]*m", "", str(s))
 
 
@@ -31,8 +30,6 @@ def _bundled_ffmpeg_dir() -> str | None:
 
 
 def _extract(url: str, opts: dict, reporter):
-    """Run yt-dlp with auto-retry on Windows file-lock races.
-    yt-dlp resumes from the .part file, so retries are cheap."""
     import yt_dlp
     last = None
     for attempt in range(3):
@@ -47,9 +44,8 @@ def _extract(url: str, opts: dict, reporter):
                      or "being used by another process" in msg
                      or "Unable to rename" in msg)
             if locky and attempt < 2:
-                reporter.log(f"Windows briefly locked the file - "
-                             f"retrying ({attempt + 2}/3), resuming "
-                             f"where it left off...")
+                reporter.log(f"Windows locked a file mid-download - "
+                             f"retrying ({attempt + 2}/3)...")
                 time.sleep(5)
                 continue
             raise
@@ -76,7 +72,6 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
                 if progress_cb:
                     progress_cb(frac)
 
-    # prefer H.264/AAC (universally playable); fall back gracefully
     fmt = (
         f"bv*[vcodec^=avc1][height<={h}]+ba[acodec^=mp4a]/"
         f"b[vcodec^=avc1][height<={h}]/"
@@ -92,6 +87,7 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
         "retries": 8,
         "fragment_retries": 8,
         "concurrent_fragment_downloads": 2,
+        "nopart": True,          # <-- no .part rename at the end = no lock race
         "progress_hooks": [hook],
     }
     ffd = _bundled_ffmpeg_dir()
