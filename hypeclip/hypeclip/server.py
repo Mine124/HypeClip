@@ -36,9 +36,6 @@ def web_dir() -> str:
 
 
 class Job(pipeline.Reporter):
-    """Internal attrs phase/frac ON PURPOSE - naming them stage/progress
-    would shadow the Reporter methods."""
-
     def __init__(self, url: str, settings: Settings):
         self.id = uuid.uuid4().hex[:12]
         self.url, self.s = url, settings
@@ -59,7 +56,15 @@ class Job(pipeline.Reporter):
         self._cmd_q: "_queue.Queue" = _queue.Queue()
 
     def log(self, m): self.logs.append(str(m))
-    def stage(self, n): self.phase = str(n); self.log("> " + str(n))
+
+    def stage(self, n):
+        n = str(n)
+        if n == "scan":
+            # a scan (re)begins ONLY here - never on popup open/close
+            self.scan_frac = 0.0
+        self.phase = n
+        self.log("> " + n)
+
     def progress(self, f): self.frac = max(self.frac, min(float(f or 0), 1))
     def progress_scan(self, f): self.scan_frac = min(float(f or 0), 1)
     def moment(self, m): self.moments.append(m)
@@ -77,6 +82,7 @@ class Job(pipeline.Reporter):
     def wait_selection(self):
         self.phase = "awaiting_selection"
         return self._sel_q.get()
+
     def wait_command(self):
         self.phase = "awaiting_command"
         return self._cmd_q.get()
@@ -92,7 +98,16 @@ class Job(pipeline.Reporter):
                 "logs": list(self.logs)[-300:]}
 
     def select(self, mode: str, rect):
-        self.scan_frac = 0.0
+        # Ignore duplicate starts while a scan is already running, and
+        # drop any stale queued selections so they can't replay later.
+        if self.phase == "scan":
+            self.log("ignored extra start - scan already running")
+            return
+        try:
+            while True:
+                self._sel_q.get_nowait()
+        except _queue.Empty:
+            pass
         self._sel_q.put({"mode": mode, "rect": rect})
 
     def command(self, kind: str, value=None):
