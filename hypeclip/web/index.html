@@ -6,7 +6,7 @@
 <header class="topbar">
   <div class="logo"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="url(#g)" d="M13 2 3 14h6l-2 8L19 9h-6l2-7z"/>
     <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs></svg>
-    <span>Hype<b>Clip</b></span><em>WIZARD · v3</em></div>
+    <span>Hype<b>Clip</b></span><em>PRO · v3.2</em></div>
   <div class="head-right"><span id="engineDot" class="dot"></span>
     <span id="engineTxt">...</span>
     <button id="folderBtn" class="ghost-btn">Output</button></div>
@@ -16,7 +16,8 @@
 <section class="card hero">
   <h1>Turn any stream into clips.</h1>
   <p>Paste a link. Draw a box over the chat. HypeClip watches how fast it
-     scrolls — when chat goes supernova, that becomes a clip.</p>
+     scrolls — when chat goes supernova, that becomes a clip.
+     Default output: <b>9:16 · 1080p · 60fps</b>.</p>
   <div class="srcrow">
     <input id="urlInput" spellcheck="false"
       placeholder="YouTube · Twitch VOD · TikTok · any video link..."/>
@@ -32,10 +33,13 @@
       <label>Sensitivity <b class="val"><output id="senOut">3</output></b>
         <input id="optSens" type="range" min="1.5" max="8" step="0.25" value="3"/></label>
       <label>Quality<select id="optHeight"><option value="480">480p</option>
-        <option value="720" selected>720p</option><option value="1080">1080p</option></select></label>
+        <option value="720">720p</option><option value="1080" selected>1080p</option></select></label>
+      <label>FPS<select id="optFps"><option>24</option><option>30</option>
+        <option selected>60</option></select></label>
       <label>Aspect<div class="seg mini" id="segAspect">
-        <button data-a="16:9" class="active">16:9</button>
-        <button data-a="9:16">9:16</button><button data-a="1:1">1:1</button></div></label>
+        <button data-a="16:9">16:9</button>
+        <button data-a="9:16" class="active">9:16</button>
+        <button data-a="1:1">1:1</button></div></label>
       <label>Captions<select id="optCapStyle"><option value="karaoke">Karaoke</option>
         <option value="tiktok">TikTok</option><option value="clean">Clean</option></select></label>
       <label class="sw"><input id="optCaps" type="checkbox" checked/><i></i>Captions</label>
