@@ -10,7 +10,7 @@ import traceback
 import urllib.parse
 import uuid
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -26,8 +26,10 @@ jobs: dict = {}
 exports: dict = {}
 LAST_OPTS_PATH = os.path.join(DATA_DIR, "last_options.json")
 PRESET_DIR = os.path.join(DATA_DIR, "presets")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 _DL: dict = {"state": "idle", "frac": 0.0, "error": None, "path": None}
 os.makedirs(PRESET_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def web_dir() -> str:
@@ -60,7 +62,6 @@ class Job(pipeline.Reporter):
     def stage(self, n):
         n = str(n)
         if n == "scan":
-            # a scan (re)begins ONLY here - never on popup open/close
             self.scan_frac = 0.0
         self.phase = n
         self.log("> " + n)
@@ -98,8 +99,6 @@ class Job(pipeline.Reporter):
                 "logs": list(self.logs)[-300:]}
 
     def select(self, mode: str, rect):
-        # Ignore duplicate starts while a scan is already running, and
-        # drop any stale queued selections so they can't replay later.
         if self.phase == "scan":
             self.log("ignored extra start - scan already running")
             return
@@ -150,14 +149,44 @@ def start_job(req: StartReq):
     return {"job_id": job.id}
 
 
+@app.post("/api/jobs/upload")
+async def start_upload_job(options: str = Form("{}"),
+                           file: UploadFile = File(...)):
+    s = Settings()
+    try:
+        s.update(json.loads(options or "{}"))
+    except Exception:
+        pass
+    s.ensure_dirs()
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".mp4"
+    dest = os.path.join(UPLOAD_DIR, uuid.uuid4().hex[:10] + ext)
+    with open(dest, "wb") as f:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+    if os.path.getsize(dest) < 10000:
+        os.remove(dest)
+        raise HTTPException(400, "uploaded file looks empty")
+    s.uploaded_file = dest
+    name = os.path.basename(file.filename or dest)
+    job = Job(name, s)
+    job.title = name
+    jobs[job.id] = job
+    threading.Thread(target=_run, args=(job,), daemon=True).start()
+    return {"job_id": job.id}
+
+
 def _run(job: Job):
     job.state = "running"
     try:
-        try:
-            from . import youtube as yt
-            job.title = yt.video_info(job.url, job.s)["title"]
-        except Exception:
-            pass
+        if job.url and job.url.startswith("http"):
+            try:
+                from . import youtube as yt
+                job.title = yt.video_info(job.url, job.s)["title"]
+            except Exception:
+                pass
         pipeline.run(job.url, job.s, job, job.stop_evt)
         job.state = "stopped" if job.stop_evt.is_set() else "done"
     except Exception as e:
