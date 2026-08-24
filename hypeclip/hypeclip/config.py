@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 
 
 def resource_dir() -> str:
@@ -38,10 +38,10 @@ class Settings:
     hype_threshold: float = 3.0
     cooldown: float = 90.0
     # --- layout / perf ---
-    aspect: str = "16:9"
+    aspect: str = "9:16"
     smart_reframe: bool = True
-    max_height: int = 720
-    fps: int = 30
+    max_height: int = 1080
+    fps: int = 60
     gpu: str = "auto"
     workers: int = 2
     # --- look ---
