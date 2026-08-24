@@ -30,36 +30,29 @@ $("#folderBtn").onclick=()=>fetch("/api/meta").then(r=>r.json()).then(m=>
  fetch("/api/reveal",{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify({path:m.out_dir})}));
 
-/* ---------- wizard open/close (view-only toggling) ---------- */
+/* ---------- wizard show/hide (view-only) ---------- */
 function openWizard(){$("#wiz").classList.remove("hidden");}
 function closeWizard(){$("#wiz").classList.add("hidden");}
 $("#wizClose").onclick=closeWizard;
+$("#wiz").addEventListener("mousedown",e=>{
+ if(e.target.id==="wiz")closeWizard();});
 
-/* REOPEN BUTTON: lives in the header, works anytime, NEVER starts a job */
+/* REOPEN BUTTON - always available, NEVER starts a job */
 (function(){
  const b=document.createElement("button");
- b.className="ghost-btn";b.id="wizToggleBtn";
- b.textContent="🎛 Wizard";
+ b.className="ghost-btn";b.id="wizToggleBtn";b.textContent="🎛 Wizard";
  b.title="Show / hide the job wizard";
- b.onclick=()=>{
-   const w=$("#wiz");
-   w.classList.toggle("hidden");
-   if(!w.classList.contains("hidden")&&typeof wizStep==="number")setStep(wizStep);
- };
+ b.onclick=()=>{const w=$("#wiz");w.classList.toggle("hidden");
+  if(!w.classList.contains("hidden")&&typeof wizStep==="number")setStep(wizStep);};
  const hr=document.querySelector(".head-right");
  if(hr)hr.prepend(b);
 })();
-
-/* clicking outside the card also closes (reopen via 🎧 button) */
-$("#wiz").addEventListener("mousedown",e=>{
- if(e.target.id==="wiz")closeWizard();});
 
 function setStep(n){wizStep=n;
  $$(".wstep").forEach(s=>{const k=+s.dataset.w;
   s.classList.toggle("active",k===n);s.classList.toggle("done",k<n);});
  $$(".wiz-steps i").forEach((l,i)=>l.classList.toggle("fill",i<n-1));
  $$(".wpanel").forEach((p,i)=>p.classList.toggle("hidden",i!==n-1));}
-/* server-driven navigation: FORWARD ONLY - never yanked backwards */
 const STAGE_STEP={"awaiting_selection":1,"awaiting_command":3,
  "scan":2,"review":3,"clip":4,"done":4};
 function syncStepFromServer(stage){
@@ -196,23 +189,73 @@ function addClip(c,sel){
  el.onmouseleave=()=>{v.pause();v.currentTime=0;};
  grid.prepend(el);}
 
-/* ---------- start job ---------- */
-async function start(){
- if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
- const url=$("#urlInput").value.trim();
- if(!url)return toast("paste a link first","err");
- const res=await fetch("/api/jobs",{method:"POST",
-  headers:{"Content-Type":"application/json"},
-  body:JSON.stringify({url,options:opts()})});
- if(!res.ok)return toast("failed to start","err");
- jobId=(await res.json()).job_id;mediaSet=false;activeJob=true;
+/* ---------- option gathering (shared by link + upload) ---------- */
+function gatherOptions(){
+ const base=opts();
+ try{
+  if($("#bkOn")&&$("#bkOn").checked){
+   /* Brand kit panel may not exist until injected - guarded */
+  }
+ }catch(e){}
+ if($("#optScanFps"))base.scan_fps=+$("#optScanFps").value;
+ return base;}
+function attachBranding(base){
+ try{
+  const on=document.getElementById("bkOn");
+  if(on&&on.checked&&document.getElementById("bkPos")){
+   return fetch("/api/streamers").then(r=>r.json()).then(st=>{
+    if(st.active){base.sub_name=st.active;base.sub_pos=$("#bkPos").value;
+     base.sub_when=$("#bkWhen").value;base.sub_dur=+$("#bkDur").value;}
+    return base;});}
+ }catch(e){}
+ return Promise.resolve(base);}
+function beginJob(id){
+ jobId=id;mediaSet=false;activeJob=true;
  rect=null;$("#rectBox").classList.add("hidden");
  $("#btnScan").dataset.scanning="0";
  $("#clipsGrid").innerHTML="";
  setStep(1);openWizard();}
+
+/* ---------- start from LINK ---------- */
+async function start(){
+ if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
+ const url=$("#urlInput").value.trim();
+ if(!url)return toast("paste a link first","err");
+ const payload=await attachBranding(gatherOptions());
+ const res=await fetch("/api/jobs",{method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({url,options:payload})});
+ if(!res.ok)return toast("failed to start","err");
+ beginJob((await res.json()).job_id);}
 $("#goBtn").onclick=start;
 $("#urlInput").addEventListener("keydown",e=>e.key==="Enter"&&start());
 addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
+
+/* ---------- start from FILE UPLOAD ---------- */
+(function(){
+ const dz=$("#dropZone"),fi=$("#fileInput");
+ dz.onclick=()=>fi.click();
+ dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag");});
+ dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));
+ dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");
+  if(e.dataTransfer.files.length)handleFile(e.dataTransfer.files[0]);});
+ fi.addEventListener("change",()=>{if(fi.files.length)handleFile(fi.files[0]);});
+
+ async function handleFile(f){
+  if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
+  toast("uploading "+f.name+" …");
+  const fd=new FormData();
+  fd.append("options",JSON.stringify(await attachBranding(gatherOptions())));
+  fd.append("file",f);
+  try{
+   const res=await fetch("/api/jobs/upload",{method:"POST",body:fd});
+   if(!res.ok)return toast((await res.json()).detail||"upload failed","err");
+   beginJob((await res.json()).job_id);
+   toast("upload complete — wizard opened","ok");
+  }catch(err){toast("upload failed: "+err,"err");}
+  finally{fi.value="";}
+ }
+})();
 
 /* ======== Brand Kit + scan-fps ======== */
 (function(){
@@ -302,34 +345,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   }}catch(e){}
 })();
 
-/* wrap start() to attach branding + scan fps, keeping the guard */
-(function(){
- const _orig=start;
- start=async function(){
-  if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
-  const url=$("#urlInput").value.trim();
-  if(!url)return toast("paste a link first","err");
-  const base=opts();
-  try{
-   if($("#bkOn")&&$("#bkOn").checked){
-    const st=await(await fetch("/api/streamers")).json();
-    if(st.active){base.sub_name=st.active;base.sub_pos=$("#bkPos").value;
-     base.sub_when=$("#bkWhen").value;base.sub_dur=+$("#bkDur").value;}}
-  }catch(e){}
-  if($("#optScanFps"))base.scan_fps=+$("#optScanFps").value;
-  const res=await fetch("/api/jobs",{method:"POST",
-   headers:{"Content-Type":"application/json"},
-   body:JSON.stringify({url,options:base})});
-  if(!res.ok)return toast("failed to start","err");
-  jobId=(await res.json()).job_id;mediaSet=false;activeJob=true;
-  rect=null;$("#rectBox").classList.add("hidden");
-  $("#btnScan").dataset.scanning="0";
-  $("#clipsGrid").innerHTML="";
-  setStep(1);openWizard();};
- $("#goBtn").onclick=start;
-})();
-
-/* ======== Export menu: multi-format downloads ======== */
+/* ======== Export menu ======== */
 (function(){
  const FORMATS=[
   ["tiktok","TikTok · 9:16 · 1080p60"],
@@ -410,7 +426,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  watchGrid("clipsGrid");watchGrid("wizClips");
 })();
 
-/* ======== Wizard Back / Next navigation (view-only, progress-gated) ======== */
+/* ======== Back / Next navigation (view-only, gated) ======== */
 (function(){
  const st=document.createElement("style");st.textContent=`
  .wiz-nav{display:flex;align-items:center;gap:10px;margin-top:18px;
@@ -453,14 +469,13 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  }
 
  $("#wizBack").onclick=()=>{
-  if(wizStep>1){setStep(wizStep-1);}
- };
+  if(wizStep>1)setStep(wizStep-1);};
  $("#wizFwd").onclick=async()=>{
   const cap=await serverMax();
   if(wizStep>=cap){
-   const why={1:"the video is still downloading",
+   const why={1:"the video is still loading",
               2:"no scan has finished yet",
-              3:"review your peaks and click Render clips first"}[cap]
+              3:"click Render clips first"}[cap]
              ||"finish this step first";
    return toast("can't skip ahead — "+why,"err");}
   setStep(Math.min(4,wizStep+1));
@@ -478,7 +493,6 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   if(jobId!==prevJob){prevJob=jobId;if(jobId){maxStep=1;setStep(1);}}
  },800);
 
- /* reopening the popup restores the correct step */
  const _open=openWizard;
  openWizard=function(){_open();if(typeof wizStep==="number")setStep(wizStep);};
 })();
