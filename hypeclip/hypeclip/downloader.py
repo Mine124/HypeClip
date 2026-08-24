@@ -1,11 +1,17 @@
 from __future__ import annotations
 import glob
 import os
+import re
+import time
+
+
+def _clean(s: str) -> str:
+    """Strip yt-dlp's ANSI color codes from progress strings."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", str(s))
 
 
 def _remux_for_browser(path: str, reporter) -> str:
-    """Stream-copy remux so the file plays instantly in <video> tags:
-    MP4 container + moov atom up front. Quality untouched, takes seconds."""
+    """Stream-copy remux so the file plays instantly in <video> tags."""
     from .utils import resolve_bin, run
     out = os.path.splitext(path)[0] + "_web.mp4"
     if os.path.isfile(out) and os.path.getsize(out) > 0:
@@ -17,12 +23,37 @@ def _remux_for_browser(path: str, reporter) -> str:
 
 
 def _bundled_ffmpeg_dir() -> str | None:
-    """Point yt-dlp at our bundled FFmpeg (it only searches PATH otherwise)."""
     try:
         from .utils import resolve_bin
         return os.path.dirname(resolve_bin("ffmpeg"))
     except Exception:
         return None
+
+
+def _extract(url: str, opts: dict, reporter):
+    """Run yt-dlp with auto-retry on Windows file-lock races.
+    yt-dlp resumes from the .part file, so retries are cheap."""
+    import yt_dlp
+    last = None
+    for attempt in range(3):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return info, ydl.prepare_filename(info)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            last = e
+            locky = ("WinError 32" in msg
+                     or "being used by another process" in msg
+                     or "Unable to rename" in msg)
+            if locky and attempt < 2:
+                reporter.log(f"Windows briefly locked the file - "
+                             f"retrying ({attempt + 2}/3), resuming "
+                             f"where it left off...")
+                time.sleep(5)
+                continue
+            raise
+    raise last  # pragma: no cover
 
 
 def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
@@ -40,7 +71,8 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
                 pct = int(frac * 100)
                 if pct != last_pct[0] and pct % 5 == 0:
                     last_pct[0] = pct
-                    reporter.log(f"D  {pct:3d}%  ETA {d.get('_eta_str','').strip()}")
+                    reporter.log(f"D  {pct:3d}%  "
+                                 f"ETA {_clean(d.get('_eta_str', '')).strip()}")
                 if progress_cb:
                     progress_cb(frac)
 
@@ -59,7 +91,7 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
         "no_warnings": True,
         "retries": 8,
         "fragment_retries": 8,
-        "concurrent_fragment_downloads": 4,
+        "concurrent_fragment_downloads": 2,
         "progress_hooks": [hook],
     }
     ffd = _bundled_ffmpeg_dir()
@@ -68,9 +100,7 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
     if settings.cookies_browser:
         opts["cookiesfrombrowser"] = (settings.cookies_browser,)
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        prepared = ydl.prepare_filename(info)
+    info, prepared = _extract(url, opts, reporter)
 
     base = os.path.splitext(prepared)[0]
     hits = sorted(glob.glob(base + ".*") + glob.glob(base),
