@@ -7,7 +7,7 @@ import subprocess
 import threading
 import unicodedata
 
-from .config import BUNDLED_ASSETS
+from .config import BUNDLED_ASSETS, DATA_DIR
 
 _BIN_CACHE: dict[str, str | None] = {}
 _PATH_INJECTED = {"done": False}
@@ -20,8 +20,7 @@ def _bundled(name: str) -> str | None:
 
 
 def _inject_path(folder: str):
-    """Make the bundled-binary folder visible to EVERYTHING in this process
-    (and to child processes) - yt-dlp, ffmpeg autodetect, subprocesses."""
+    """Make the tools folder visible to EVERYTHING: yt-dlp, subprocesses."""
     if _PATH_INJECTED["done"] or not folder:
         return
     try:
@@ -29,7 +28,7 @@ def _inject_path(folder: str):
         if folder.lower() not in cur.lower():
             os.environ["PATH"] = folder + os.pathsep + cur
         _PATH_INJECTED["done"] = True
-        print(f"[hypeclip] media tools folder on PATH: {folder}", flush=True)
+        print(f"[hypeclip] media tools on PATH: {folder}", flush=True)
     except Exception:
         pass
 
@@ -46,16 +45,74 @@ def resolve_bin(name: str) -> str:
             pass
     if found:
         _inject_path(os.path.dirname(found))
-        if _BIN_CACHE.get("__announced__") != name:
-            print(f"[hypeclip] using {name}: {found}", flush=True)
+        print(f"[hypeclip] using {name}: {found}", flush=True)
     _BIN_CACHE[name] = found
     if not found:
-        raise RuntimeError(f"'{name}' not found. Install FFmpeg or reinstall HypeClip.")
+        raise RuntimeError(f"'{name}' not found on this system.")
     return found
 
 
+# ---------------------------------------------------------------- self-heal
+def ensure_ffmpeg() -> str:
+    """Guarantee ffmpeg+ffprobe exist and are visible. Order:
+    1) already resolvable (PATH / bundle)  2) Data\\bin from a previous run
+    3) download a portable build once (~100 MB) into Data\\bin."""
+    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    pex = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+
+    # 1) already fine?
+    try:
+        p = resolve_bin("ffmpeg")
+        resolve_bin("ffprobe")
+        return p
+    except Exception:
+        pass
+
+    # 2) fetched on a previous run?
+    local = os.path.join(DATA_DIR, "bin")
+    if os.path.isfile(os.path.join(local, exe)):
+        _inject_path(local)
+        _BIN_CACHE["ffmpeg"] = os.path.join(local, exe)
+        _BIN_CACHE["ffprobe"] = os.path.join(local, pex)
+        print(f"[hypeclip] using ffmpeg from Data: {_BIN_CACHE['ffmpeg']}",
+              flush=True)
+        return _BIN_CACHE["ffmpeg"]
+
+    # 3) download once
+    print("[hypeclip] ffmpeg not found - downloading media tools "
+          "(~100 MB, one time only)...", flush=True)
+    import tempfile
+    import urllib.request
+    import zipfile
+    url = ("https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/"
+           "ffmpeg-master-latest-win64-gpl.zip")
+    tmp_zip = os.path.join(tempfile.gettempdir(), "hc_ffmpeg.zip")
+    urllib.request.urlretrieve(url, tmp_zip)
+    os.makedirs(local, exist_ok=True)
+    got = []
+    with zipfile.ZipFile(tmp_zip) as z:
+        for n in z.namelist():
+            b = os.path.basename(n)
+            if b.lower() in ("ffmpeg.exe", "ffprobe.exe"):
+                with z.open(n) as src, \
+                        open(os.path.join(local, b), "wb") as dst:
+                    dst.write(src.read())
+                got.append(b)
+    try:
+        os.remove(tmp_zip)
+    except Exception:
+        pass
+    if exe not in got:
+        raise RuntimeError("ffmpeg download failed - check internet connection.")
+    _inject_path(local)
+    _BIN_CACHE["ffmpeg"] = os.path.join(local, exe)
+    _BIN_CACHE["ffprobe"] = os.path.join(local, pex)
+    print(f"[hypeclip] media tools ready: {local}", flush=True)
+    return _BIN_CACHE["ffmpeg"]
+
+
 def which_ffmpeg():
-    resolve_bin("ffmpeg")
+    ensure_ffmpeg()
 
 
 def run(cmd: list[str], capture_bytes: bool = False):
@@ -69,8 +126,8 @@ def run(cmd: list[str], capture_bytes: bool = False):
 
 def probe(path: str) -> dict:
     try:
-        out = run([resolve_bin("ffprobe"), "-v", "error", "-print_format", "json",
-                   "-show_format", "-show_streams", path])
+        out = run([resolve_bin("ffprobe"), "-v", "error", "-print_format",
+                   "json", "-show_format", "-show_streams", path])
         return json.loads(out)
     except Exception:
         return _parse_stderr(path)
