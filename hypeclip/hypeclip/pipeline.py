@@ -85,66 +85,109 @@ def _dims_for(aspect, src_h):
 
 def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     work, src = ctx["work"], ctx["media"]
-    wav = os.path.join(work, f"c{idx}.wav")
-    captions.slice_wav(src, start, dur, wav)
 
+    # ================= HOOK PASS (before anything else) =================
+    probe_wav = os.path.join(work, f"c{idx}_probe.wav")
+    captions.slice_wav(src, start, dur, probe_wav)
+    hook_delta, hook_why = 0.0, "n/a"
+    segs = []
+    if settings.autocaptions:
+        segs = captions.transcribe_audio(probe_wav, settings, r)
+        try:
+            from . import hooks
+            hook_delta, hook_why = hooks.best_trim(segs, cur_dur=dur)
+        except Exception as e:  # noqa: BLE001
+            hook_why = f"skipped ({e})"
+    if hook_delta >= 0.6:
+        start += hook_delta
+        dur -= hook_delta
+        captions.slice_wav(src, start, dur, probe_wav)   # re-slice
+        segs = [s for s in segs if s["end"] > hook_delta]
+        for s in segs:
+            s["start"] = max(0.0, s["start"] - hook_delta)
+            s["end"] = max(0.05, s["end"] - hook_delta)
+            if s.get("words"):
+                s["words"] = [w for w in s["words"]
+                              if w.get("e", 0) > hook_delta]
+                for w in s["words"]:
+                    w["s"] -= hook_delta; w["e"] -= hook_delta
+        r.log(f"🪝 hook trim -{hook_delta:.1f}s ({hook_why})")
+    elif settings.autocaptions:
+        r.log(f"🪝 hook kept as-is ({hook_why})")
+
+    wav = os.path.join(work, f"c{idx}.wav")
+    if not os.path.isfile(wav) or probe_wav != wav:
+        shutil.copyfile(probe_wav, wav)
+
+    # ---- captions ----
     subs_path = None
     caption_texts = ""
-    if settings.autocaptions:
-        segs = captions.transcribe_audio(wav, settings, r)
-        if segs:
-            caption_texts = " ".join(s.get("text", "") for s in segs)
-            cs = CaptionStyle.load_active()
-            subs_path = os.path.join(work, f"c{idx}.ass")
-            captions.write_ass(segs, subs_path, cs, *ctx["dims"])
-
-    # ---- preliminary category (drives punch/SFX taste) ----
+    if settings.autocaptions and segs:
+        caption_texts = " ".join(s.get("text", "") for s in segs)
     pre_cat = "highlight"
-    try:
-        from . import intel
-        if caption_texts:
+    if caption_texts:
+        try:
+            from . import intel
             pre_cat, _tags = intel.classify(caption_texts)
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-    # ---- decision-engine SFX (taste + restraint) ----
+    # ---- DEAD-AIR SURGEON ----
+    mapping = None
+    if dur >= 30:
+        try:
+            pauses = decide.find_dead_air(wav)
+            removable = sum(b - a for a, b in pauses)
+            if 0.8 <= removable <= dur * 0.30:
+                prep = os.path.join(work, f"c{idx}_prep.mp4")
+                built, mapping = decide.build_trimmed(
+                    src, prep, start, dur, pauses)
+                if built:
+                    r.log(f"✂ removed {removal:.0f}s of dead air "
+                          f"({len(pauses)} pauses)")
+                    dur = mapping["new_dur"]
+                    src_for_render = built
+                    if segs:
+                        for s in segs:
+                            s["start"] = decide.remap(s["start"], mapping)
+                            s["end"] = decide.remap(s["end"], mapping)
+                            if s.get("words"):
+                                for w in s["words"]:
+                                    w["s"] = decide.remap(w["s"], mapping)
+                                    w["e"] = decide.remap(w["e"], mapping)
+                    segs = [s for s in segs if s["end"] > 0.1]
+                    start = 0.0
+                    src = built
+        except Exception as e:  # noqa: BLE001
+            r.log(f"(dead-air surgery skipped: {e})")
+
+    # ---- captions file (calm mode for emotional categories) ----
+    if settings.autocaptions and segs:
+        cs = CaptionStyle.load_active()
+        if pre_cat == "reaction":
+            cs.d["effect"] = "fade"
+            r.log("🧭 captions calmed (fade) - emotional tone")
+        subs_path = os.path.join(work, f"c{idx}.ass")
+        captions.write_ass(segs, subs_path, cs, *ctx["dims"])
+
+    # ---- SFX taste engine ----
     events: list = []
     if settings.sfx_enabled:
         pool = sfx.list_sfx(settings.sfx_dir)
         if pool:
             try:
-                events, notes = decide.sfx_plan(
-                    wav, caption_texts, settings, r, pool)
+                events, notes = decide.sfx_plan(wav, caption_texts,
+                                                settings, r, pool)
                 for nt in notes:
                     r.log("🧭 " + nt)
             except Exception as e:  # noqa: BLE001
                 r.log(f"(sfx engine fallback: {e})")
-                pool = [p for p in pool]
-                if pool:
-                    impact = min(max(settings.pre_roll, 0.2), dur - 0.5)
-                    events = [{"t": impact, "file": pool[0],
-                               "gain_db": settings.sfx_volume_db}]
-    if settings.beat_sync:
-        try:
-            kb = beats.strongest_beats(wav, 3, avoid=[],
-                                       window=(0.4, max(0.5, dur - 0.8)))[:3]
-            alt = ["vine_boom", "notification", "womp_womp"]
-            pool = sfx.list_sfx(settings.sfx_dir)
-            for j, bt in enumerate(kb):
-                p = pool[j + 1] if len(pool) > j + 1 else (pool[0] if pool
-                                                           else None)
-                if p:
-                    events.append({"t": bt, "file": p,
-                                   "gain_db": settings.sfx_volume_db - 8})
-        except Exception:
-            pass
 
     music = None
     if settings.music_file and os.path.isfile(settings.music_file):
         music = {"file": settings.music_file,
                  "volume_db": settings.music_volume_db,
                  "duck": settings.duck_music}
-
     sub = None
     if getattr(settings, "sub_name", ""):
         from .config import DATA_DIR
@@ -156,18 +199,24 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                    "pos": settings.sub_pos,
                    "t0": 0.5 if settings.sub_when == "start"
                         else max(0.3, dur - settings.sub_dur - 0.3)}
-
     wm = settings.watermark_file if settings.watermark_file and \
         os.path.isfile(settings.watermark_file) else None
 
-    # ---- decision-engine punch-in ----
+    # ---- PACING DOCTRINE: per-category effect budget ----
+    doc = decide.pacing_plan(pre_cat, score)
+    r.log(f"🧭 pacing: {doc['note']}")
+    zoom_on = settings.zoom_punch and doc["zoom"]
     do_punch, amp, zreason = decide.punch_decision(
         pre_cat, int(_clamp(score, 0, 99)))
-    zoom_on = settings.zoom_punch or do_punch
-    zoom_str = max(settings.zoom_strength, amp) if do_punch \
-        else settings.zoom_strength
-    if do_punch:
+    if do_punch and doc["zoom"]:
+        zoom_on = True
         r.log(f"🧭 punch-in: {zreason} ({int(amp * 100)}%)")
+    shake_v = settings.shake if doc["shake"] else 0.0
+    flash_v = settings.flash_intro and doc["flash"]
+    bloom_v = settings.bloom and doc["bloom"]
+    grain_v = settings.grain and doc["grain"]
+    vig_v = settings.vignette and doc["vignette"]
+    beat_v = settings.beat_sync and doc["beat"]
 
     plan = {
         "src": src, "dest": os.path.join(work, f"c{idx}_fin.mp4"),
@@ -178,23 +227,23 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "W": ctx["dims"][0], "H": ctx["dims"][1],
         "enhance": bool(getattr(settings, "enhance", False)),
         "enhance_mode": getattr(settings, "enhance_mode", "light"),
-        "look": settings.fx_look, "bloom": settings.bloom,
-        "grain": settings.grain, "vignette": settings.vignette,
-        "zoom_punch": zoom_on, "zoom_strength": zoom_str,
-        "shake": settings.shake,
+        "look": settings.fx_look, "bloom": bloom_v,
+        "grain": grain_v, "vignette": vig_v,
+        "zoom_punch": zoom_on, "zoom_strength": settings.zoom_strength,
+        "shake": shake_v,
         "impact_t": min(settings.pre_roll, dur * 0.6),
-        "beat_sync": settings.beat_sync,
-        "flash_intro": settings.flash_intro,
+        "beat_sync": beat_v, "flash_intro": flash_v,
         "title": settings.title_text.replace("{score}", str(int(score))),
         "progress_bar": settings.progress_bar, "watermark": wm,
         "subscribe": sub,
         "subs": subs_path, "sfx_events": events, "music": music,
         "wav": wav,
     }
-
     trk = (ctx.get("tracks_by_index") or {}).get(idx)
-    if trk:
+    if trk and not mapping:      # tracking timeline breaks after surgery
         plan["track_cmd"] = trk["cmd_file"]
+    elif trk and mapping:
+        r.log("(eagle-eye skipped on this clip: timeline was surgically edited)")
 
     fx.render_clip(plan, r)
 
@@ -225,21 +274,25 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         r.log(f"clip verdict: [{info_i['category']}] "
               f"viral={info_i['viral']}/100 "
               f"({' · '.join(info_i['reasons'])})")
-        if info_i["meta"].get("title"):
-            r.log(f"suggested title: {info_i['meta']['title']} "
-                  f"{info_i['meta']['hashtags']}")
     except Exception as e:  # noqa: BLE001
         r.log(f"(intelligence pass skipped: {e})")
 
-    # ---- retention prediction ----
     try:
         db = intel.audio_db(wav)
         feats = decide.features_from_db(db, 0.0, dur, score, caption_texts)
-        clip["retention"] = decide.predict(feats)
-        rt = clip["retention"]
+        rt = decide.predict(feats)
+        clip["retention"] = rt
+        issues = decide.critique(
+            feats, rt,
+            [k for k, on in (("zoom", zoom_on), ("shake", shake_v > 0),
+                             ("flash", flash_v), ("bloom", bloom_v),
+                             ("grain", grain_v)) if on],
+            pre_cat)
+        if issues:
+            r.log("🔍 critic: " + " · ".join(issues))
         r.log(f"📈 predicted: watch {rt['avg_watch_pct']}% · "
               f"complete {rt['completion']}% · swipe {rt['swipe_prob']}%"
-              + (" · calibrated on your history" if rt["calibrated"] else ""))
+              + (" · calibrated" if rt["calibrated"] else ""))
     except Exception as e:  # noqa: BLE001
         r.log(f"(prediction skipped: {e})")
 
@@ -272,9 +325,8 @@ def _vod(url, info, plat, settings, r, stop):
     key = info.get("id") or safe_name(info.get("title") or "media")
     work = os.path.join(settings.work_dir, key)
     os.makedirs(work, exist_ok=True)
-
     if os.getenv("HYPECLIP_FULL_DOWNLOAD") == "1":
-        r.log("full-download mode (HYPECLIP_FULL_DOWNLOAD=1)")
+        r.log("full-download mode")
         path, _ = downloader.download_vod(
             url, work, settings, r,
             progress_cb=lambda f: r.progress(0.02 + 0.43 * (f or 0)))
@@ -282,8 +334,7 @@ def _vod(url, info, plat, settings, r, stop):
         r.media_ready(key, os.path.basename(path), dur)
         return _scan_and_render(path, dur, info["title"],
                                 settings, r, stop, url=None)
-
-    r.log("fast pass: lightweight preview first - HD is fetched per-clip")
+    r.log("fast pass: lightweight preview first - HD fetched per-clip")
     path, _ = downloader.download_proxy(
         url, work, settings, r,
         progress_cb=lambda f: r.progress(0.02 + 0.38 * (f or 0)))
@@ -295,21 +346,16 @@ def _vod(url, info, plat, settings, r, stop):
 
 def _scan_and_render(media_path, dur, title, settings, r, stop,
                      url=None, media_is_proxy=False):
-    """select -> scan -> intelligence -> [review unless autopilot] ->
-    per-clip HD fetch -> decision-driven render."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
     proxy = media_is_proxy
-    track_point = None
 
     moments = []
     while True:
         sel = r.wait_selection()
         if stop is not None and stop.is_set():
             return []
-        track_point = sel.get("point") \
-            if sel.get("mode") == "track" else None
         r.stage("scan")
         r.progress(0.44)
         if sel.get("mode") == "audio":
@@ -330,23 +376,20 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         except Exception as e:  # noqa: BLE001
             r.log(f"(boundaries default: {e})")
 
-        # decision-engine micro-revision: try tight vs loose ending,
-        # keep whichever predicts better retention
         try:
             from . import intel
             db = intel.audio_db(media_path)
             for m in moments[:int(settings.max_clips)]:
-                feats_a = decide.features_from_db(db, m.start,
-                                                  m.end - m.start, m.score)
+                fa = decide.features_from_db(db, m.start, m.end - m.start,
+                                             m.score)
                 alt_end = m.end - min(6.0, (m.end - m.start) * 0.18)
                 if alt_end - m.start > 15:
-                    feats_b = decide.features_from_db(
-                        db, m.start, alt_end - m.start, m.score)
-                    if decide.predict(feats_b)["score"] > \
-                            decide.predict(feats_a)["score"] + 2:
+                    fb = decide.features_from_db(db, m.start,
+                                                 alt_end - m.start, m.score)
+                    if decide.predict(fb)["score"] > \
+                            decide.predict(fa)["score"] + 2:
                         m.end = round(alt_end, 1)
-                        r.log(f"🧭 tightened ending @ {fmt_ts(m.end)} "
-                              f"(predicts better retention)")
+                        r.log(f"🧭 tightened ending @ {fmt_ts(m.end)}")
         except Exception as e:  # noqa: BLE001
             r.log(f"(boundary revision skipped: {e})")
         r.progress(0.50)
@@ -359,7 +402,6 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         if getattr(settings, "auto_render", False):
             r.log("autopilot: peaks locked in - rendering now")
             break
-
         cmd = r.wait_command()
         if cmd[0] == "rescan":
             settings.hype_threshold = float(cmd[1])
@@ -368,8 +410,6 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
 
     r.stage("clip")
     ordered = sorted(moments, key=lambda m: m.start)[:int(settings.max_clips)]
-
-    # ---- per-clip HD segments (proxy mode only) ----
     hd: dict = {}
     if url and proxy:
         r.stage("fetch-hd")
@@ -380,10 +420,7 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                     ctx["work"], settings, r, idx=i)
                 r.progress(0.50 + 0.08 * (i + 1) / max(1, len(ordered)))
             except Exception as e:  # noqa: BLE001
-                r.log(f"(HD segment {i + 1} failed: {e}) "
-                      f"- rendering from preview quality")
-    elif url:
-        r.log("(proxy off - rendering from the full download)")
+                r.log(f"(HD segment {i + 1} failed: {e})")
 
     clips: list = [None] * len(ordered)
 
@@ -400,25 +437,6 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         else:
             c = ctx
             s, d = m.start, m.end - m.start
-
-        # Eagle-Eye camera follow (built on the actual render source)
-        if track_point:
-            try:
-                from . import tracker
-                outp = os.path.join(c["work"], f"trk_{i}.txt")
-                trk = tracker.build_track(
-                    c["media"], s, d,
-                    (float(track_point.get("x", 0.5)),
-                     float(track_point.get("y", 0.5))),
-                    settings.aspect, outp)
-                if trk:
-                    c["tracks_by_index"] = {i: trk}
-                    r.log(f"Eagle-Eye: clip {i + 1} camera follow ready"
-                          + (" (AI)" if trk["ai"]
-                             else " (motion-fallback)"))
-            except Exception as e:  # noqa: BLE001
-                r.log(f"(tracking skipped for clip {i + 1}: {e})")
-
         return i, _finish_clip(c, s, d, i, title, m.score, settings, r)
 
     workers = max(1, min(int(settings.workers), 3))
