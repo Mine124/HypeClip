@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.8.0"
 
 
 def resource_dir() -> str:
