@@ -143,6 +143,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "sendcmd": os.path.join(work, f"c{idx}_cmd.txt"),
         "W": ctx["dims"][0], "H": ctx["dims"][1],
         "enhance": bool(getattr(settings, "enhance", False)),
+        "enhance_mode": getattr(settings, "enhance_mode", "light"),
         "look": settings.fx_look, "bloom": settings.bloom,
         "grain": settings.grain, "vignette": settings.vignette,
         "zoom_punch": settings.zoom_punch,
@@ -205,7 +206,6 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
 
 def _scan_and_render(media_path, dur, title, settings: Settings,
                      r: Reporter, stop):
-    """Wizard loop: select rect -> scan -> [review unless autopilot] -> render."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
