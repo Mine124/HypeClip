@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.2.6"
+APP_VERSION = "3.2.7"
 
 
 def resource_dir() -> str:
@@ -40,7 +40,8 @@ class Settings:
     # --- autopilot ---
     auto_render: bool = True
     # --- visual enhancement ---
-    enhance: bool = True
+    enhance: bool = False
+    enhance_mode: str = "light"          # light | heavy
     # --- layout / perf ---
     aspect: str = "9:16"
     smart_reframe: bool = True
@@ -48,12 +49,12 @@ class Settings:
     fps: int = 60
     gpu: str = "auto"
     workers: int = 2
-    # --- look (all OFF - clean output) ---
+    # --- look ---
     fx_look: str = "none"
     bloom: bool = False
     grain: bool = False
     vignette: bool = False
-    # --- motion (all OFF) ---
+    # --- motion ---
     zoom_punch: bool = False
     zoom_strength: float = 0.55
     shake: float = 0.0
