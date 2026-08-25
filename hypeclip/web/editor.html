@@ -1,97 +1,290 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>HypeClip · Editor</title>
+<title>HypeClip · EditDesk</title>
 <link rel="stylesheet" href="/static/styles.css"/>
 <style>
-.wrap{max-width:1180px;margin:0 auto;padding:24px 22px 90px}
-.editgrid{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;align-items:start}
-@media(max-width:960px){.editgrid{grid-template-columns:1fr}}
+.wrap{max-width:1240px;margin:0 auto;padding:20px 20px 40px}
+.editgrid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);
+ gap:16px;align-items:start}
+@media(max-width:1000px){.editgrid{grid-template-columns:1fr}}
 .preview video{width:100%;aspect-ratio:16/9;background:#000;border-radius:14px;
  display:block;box-shadow:var(--sh-card)}
-.tline{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
-.ectl{background:linear-gradient(180deg,#12151fcc,#0d1017dd);border:1px solid var(--line);
- border-radius:var(--r-lg);padding:20px;margin-bottom:18px}
-.slider label{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim)}
-.big{font-size:15px;font-weight:800;margin-bottom:14px;display:flex;align-items:center;gap:8px}
-textarea.txt{margin-top:6px}
-.result video{width:100%;border-radius:12px;margin-top:8px}
-.backlink{color:var(--dim);font-size:13px;text-decoration:none}
-.backlink:hover{color:#fff}
+.tline{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+.ectl{background:var(--panel-solid);border:1px solid var(--line);
+ border-radius:var(--r-lg);padding:16px;margin-bottom:14px}
+.big{font-size:14px;font-weight:800;margin-bottom:12px;display:flex;
+ align-items:center;gap:8px;letter-spacing:.4px;text-transform:uppercase;color:#cbd5f5}
+.slider{margin-top:10px}.slider label{display:flex;justify-content:space-between;
+ font-size:11.5px;color:var(--dim);margin-bottom:4px}
+.tabs{display:flex;gap:4px;background:#12141c;border:1px solid var(--line);
+ padding:4px;border-radius:11px;margin-bottom:12px;flex-wrap:wrap}
+.tab{flex:1;background:transparent;border:none;color:var(--dim);padding:7px 6px;
+ border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;white-space:nowrap}
+.tab.active{color:#fff;background:var(--grad)}
+.tabpane{display:none}.tabpane.active{display:block}
+.seqstrip{display:flex;gap:8px;overflow-x:auto;padding:10px;background:#0b0e17;
+ border:1px solid var(--line);border-radius:12px;min-height:74px}
+.seqchip{position:relative;min-width:130px;background:#141a2b;border:1px solid var(--line);
+ border-radius:10px;padding:8px 10px;font-size:11px;cursor:pointer;flex-shrink:0;
+ border-top:3px solid var(--acc)}
+.seqchip.sel{outline:2px solid var(--acc2)}
+.seqchip b{display:block;font-size:11px;overflow:hidden;text-overflow:ellipsis;
+ white-space:nowrap;max-width:110px}
+.seqchip .ops{display:flex;gap:4px;margin-top:5px}
+.seqchip .ops button{font-size:10px;padding:2px 5px}
+.markers{position:relative;height:14px;margin-top:4px}
+.marker{position:absolute;top:0;width:2px;height:12px;background:var(--gold);cursor:pointer}
+.librow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.librow input[type=text]{max-width:180px}
+.libitem{display:inline-flex;align-items:center;gap:6px;background:#141827;
+ border-radius:99px;padding:5px 6px 5px 12px;font-size:11.5px;margin:4px 6px 0 0;cursor:pointer}
+.libitem:hover{background:#1c2337}
+.libitem.fav::before{content:'★';color:var(--gold)}
+.kfs{margin-top:8px;display:flex;flex-direction:column;gap:4px;font-size:11px}
+.kf{display:flex;gap:6px;align-items:center}
+.kf input{padding:4px 6px;font-size:11px;width:70px}
+select,input[type=number]{background:#0b0d15;color:#fff;border:1px solid
+ rgba(255,255,255,.13);border-radius:8px;padding:7px;outline:none;width:100%}
 </style></head><body>
 <div class="bg-mesh"></div>
 <header class="topbar">
- <div class="logo">✂️ <span>Edit<b>Desk</b></span><em>HYPECLIP</em></div>
- <div class="head-right"><a class="ghost-btn backlink" href="/">← back to Studio</a></div>
+ <div class="logo">✂️ <span>Edit<b>Desk</b></span><em>PRO SEQUENCE</em></div>
+ <div class="head-right">
+  <button class="ghost-btn" id="undoBtn">↶</button>
+  <button class="ghost-btn" id="redoBtn">↷</button>
+  <button class="ghost-btn" id="saveBtn">💾 Save</button>
+  <a class="ghost-btn backlink" href="/">← Studio</a></div>
 </header>
 <div class="wrap">
- <div class="card hero" style="padding:18px">
-  <div class="big">🎞 Editing: <span id="clipName" class="green"></span></div>
- </div>
+ <section class="card" style="padding:14px">
+  <div class="preview"><video id="pv" controls playsinline></video></div>
+  <div class="tline">
+   <button class="mini-btn" id="setIn">⬅ In</button>
+   <button class="mini-btn" id="setOut">Out ➡</button>
+   <button class="mini-btn" id="splitBtn">✂ Split</button>
+   <button class="mini-btn" id="dupBtn">⧉ Duplicate</button>
+   <button class="mini-btn danger" id="delBtn">🗑 Delete</button>
+   <button class="mini-btn" id="sceneBtn">🎬 Detect scenes</button>
+   <button class="mini-btn" id="silenceBtn">🤫 Detect silence</button>
+   <label class="sw slim"><input type="checkbox" id="snap"/><i></i>Snap</label>
+   <span class="dim" id="selInfo"></span><span class="flex1"></span>
+   <span class="dim">speed</span>
+   <button class="mini-btn" data-rate="0.25">.25×</button>
+   <button class="mini-btn" data-rate="0.5">.5×</button>
+   <button class="mini-btn accent" data-rate="1">1×</button>
+   <button class="mini-btn" data-rate="2">2×</button>
+   <button class="mini-btn" data-rate="4">4×</button>
+  </div>
+  <div class="markers" id="markers"></div>
+ </section>
+
+ <div class="card" style="padding:14px">
+  <h3>Sequence</h3>
+  <div class="seqstrip" id="seq"></div>
+  <div class="row">
+   <label class="sw"><input type="checkbox" id="snapSeq"/><i></i>Magnetic</label>
+   <label style="font-size:11.5px;color:var(--dim)">Transition
+    <select id="trType" style="width:auto">
+     <option value="none">None (cut)</option><option value="fade">Fade</option>
+     <option value="flash">Flash</option><option value="dissolve">Dissolve</option>
+     <option value="wipe_left">Wipe ←</option><option value="wipe_right">Wipe →</option>
+     <option value="slide_left">Slide</option><option value="zoom">Zoom</option>
+     <option value="blur">Blur</option><option value="glitch">Glitch</option>
+     <option value="circle_open">Circle open</option><option value="radial">Radial</option>
+    </select></label>
+   <label style="font-size:11.5px;color:var(--dim)">Dur
+    <input id="trDur" type="number" value="0.5" step="0.1"
+     min="0" max="2.5" style="width:64px"/></label>
+  </div>
+ </section>
+
  <div class="editgrid">
-  <section class="card">
-   <div class="preview"><video id="pv" controls playsinline></video></div>
-   <div class="tline">
-    <button class="mini-btn" id="setIn">Set In ⬅</button>
-    <button class="mini-btn" id="setOut">Set Out ➡</button>
-    <button class="mini-btn" id="playSel">▶ Preview selection</button>
-    <span class="dim" id="selInfo"></span>
+  <section>
+   <div class="tabs" id="tabs">
+    <button class="tab active" data-p="transform">Transform</button>
+    <button class="tab" data-p="color">Color</button>
+    <button class="tab" data-p="fx">Effects</button>
+    <button class="tab" data-p="chroma">Chroma</button>
+    <button class="tab" data-p="audio">Audio</button>
+    <button class="tab" data-p="keys">Keys</button>
+    <button class="tab" data-p="overlays">Text/Shapes</button>
+    <button class="tab" data-p="export">Export</button>
    </div>
-   <div class="row"><span class="flex1"></span>
-    <button id="renderBtn" class="cta sm">💾 Render edited clip 🎬</button></div>
-   <p class="hint" id="statusLine">tweak the controls, then render.</p>
-   <div class="result hidden" id="resultBox">
-    <h3>Your edited clip</h3>
-    <video id="resultVid" controls playsinline></video>
-    <a class="mini-btn accent" id="dlBtn" download>⬇ Download</a>
+
+   <div class="ectl tabpane active" id="tp-transform">
+    <div class="big">🎛 Clip transform</div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+     <label>X<input id="tfX" type="number" value="0"/></label>
+     <label>Y<input id="tfY" type="number" value="0"/></label>
+     <label>Scale<input id="tfScale" type="number" value="1" step="0.05"/></label>
+     <label>Rotation<select id="tfRot"><option>0</option><option>90</option>
+      <option>180</option><option>270</option></select></label>
+     <label>Flip<select id="tfFlip"><option value="">none</option>
+      <option value="h">horizontal</option><option value="v">vertical</option>
+      <option value="both">both</option></select></label>
+     <label>Opacity<input id="tfOp" type="number" value="" placeholder="1"
+      min="0" max="1" step="0.05"/></label>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-top:10px">
+     <label>Crop x%<input id="crX" type="number" value="0"/></label>
+     <label>y%<input id="crY" type="number" value="0"/></label>
+     <label>w%<input id="crW" type="number" value="0" placeholder="full"/></label>
+     <label>h%<input id="crH" type="number" value="0" placeholder="full"/></label>
+    </div>
+    <div class="grid" style="margin-top:10px">
+     <label>Speed<input id="spd" type="range" min="0.25" max="4" step="0.05" value="1"/></label>
+     <label class="sw" style="align-self:end"><input id="rev" type="checkbox"/><i></i>Reverse</label>
+     <label class="sw" style="align-self:end"><input id="ip60" type="checkbox"/><i></i>AI-smooth 60 (slow!)</label>
+    </div>
+   </div>
+
+   <div class="ectl tabpane" id="tp-color">
+    <div class="big">🎨 Color grade</div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+     <label>Brightness<input id="coB" type="number" step="0.01" value="0"/></label>
+     <label>Contrast<input id="coC" type="number" step="0.01" value="1"/></label>
+     <label>Saturation<input id="coS" type="number" step="0.01" value="1"/></label>
+     <label>Vibrance<input id="coV" type="number" step="0.05" value="0"/></label>
+     <label>Hue°<input id="coH" type="number" value="0"/></label>
+     <label>Exposure<input id="coE" type="number" step="0.05" value="0"/></label>
+     <label>Temp<input id="coT" type="number" step="0.1" value="0"/></label>
+     <label>Tint<input id="coTn" type="number" step="0.1" value="0"/></label>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
+     <label>LUT .cube
+      <input type="file" id="lutFile" accept=".cube" hidden/>
+      <button class="mini-btn" id="lutBtn" style="margin-top:4px">Upload LUT</button>
+      <span class="dim" id="lutName"></span></label>
+     <div style="display:flex;gap:6px;align-items:end;flex-wrap:wrap">
+      <button class="mini-btn" data-scope="histogram">Histogram</button>
+      <button class="mini-btn" data-scope="vectorscope">Vectorscope</button>
+      <button class="mini-btn" data-scope="waveform">Waveform</button></div>
+    </div>
+    <img id="scopeImg" style="width:100%;border-radius:10px;margin-top:8px;display:none"/>
+   </div>
+
+   <div class="ectl tabpane" id="tp-fx">
+    <div class="big">✨ Effects stack</div>
+    <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+     <label>Blur σ<input id="fxBlur" type="number" step="0.5" value="0"/></label>
+     <label>Sharpen<input id="fxSharp" type="number" step="0.1" value="0"/></label>
+     <label>Glow (0/1)<input id="fxGlow" type="checkbox"/></label>
+     <label>Film grain<input id="fxGrain" type="checkbox"/></label>
+     <label>Pixelate<input id="fxPix" type="number" value="0" min="0"/></label>
+     <label>Mosaic<input id="fxMos" type="number" value="0" min="0"/></label>
+     <label class="sw" style="align-self:end"><input id="fxVhs" type="checkbox"/><i></i>VHS</label>
+     <label>RGB split<input id="fxRgb" type="number" value="0" min="0" max="30"/></label>
+     <label class="sw" style="align-self:end"><input id="fxEmboss" type="checkbox"/><i></i>Emboss</label>
+     <label class="sw" style="align-self:end"><input id="fxBox" type="checkbox"/><i></i>Box blur</label>
+    </div>
+   </div>
+
+   <div class="ectl tabpane" id="tp-chroma">
+    <div class="big">🟩 Chroma key</div>
+    <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+     <label class="sw" style="align-self:end"><input id="ckOn" type="checkbox"/><i></i>Enable</label>
+     <label>Screen<select id="ckCol"><option value="green">Green</option>
+      <option value="blue">Blue</option></select></label>
+     <label>Similarity<input id="ckSim" type="number" step="0.01" value="0.25"/></label>
+     <label>Edge softness<input id="ckSoft" type="number" step="0.01" value="0.1"/></label>
+     <label class="sw"><input id="ckSpill" type="checkbox" checked/><i></i>Spill suppress</label>
+    </div>
+   </div>
+
+   <div class="ectl tabpane" id="tp-audio">
+    <div class="big">🔊 Clip audio</div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+     <label>Vol dB<input id="auV" type="number" value="0"/></label>
+     <label>Pan<input id="auP" type="number" step="0.1" value="0" min="-1" max="1"/></label>
+     <label>Pitch<input id="auPit" type="number" step="0.05" value="1"/></label>
+     <label>Bass boost<input id="auBa" type="number" value="0"/></label>
+     <label>Treble boost<input id="auTr" type="number" value="0"/></label>
+    </div>
+    <div class="grid" style="margin-top:10px">
+     <label class="sw"><input id="auDn" type="checkbox"/><i></i>Noise reduction</label>
+     <label class="sw"><input id="auVo" type="checkbox"/><i></i>Voice enhance</label>
+     <label class="sw"><input id="auCp" type="checkbox"/><i></i>Compressor</label>
+     <label class="sw"><input id="auLm" type="checkbox"/><i></i>Limiter</label>
+     <label class="sw"><input id="auNm" type="checkbox"/><i></i>Normalize</label>
+     <label class="sw"><input id="auMu" type="checkbox"/><i></i>Mute</label>
+    </div>
+   </div>
+
+   <div class="ectl tabpane" id="tp-keys">
+    <div class="big">🔑 Keyframes (linear)</div>
+    <p class="hint">Times are seconds within THIS clip.</p>
+    <div class="big" style="font-size:11px;margin-top:8px">Opacity keys</div>
+    <div class="kfs" id="kfoList"></div>
+    <div class="kf"><input placeholder="t" id="kfoT"/><input placeholder="0-1" id="kfoV"/>
+     <button class="mini-btn" id="kfoAdd">+</button></div>
+    <div class="big" style="font-size:11px;margin-top:12px">Volume keys (dB)</div>
+    <div class="kfs" id="kfvList"></div>
+    <div class="kf"><input placeholder="t" id="kfvT"/><input placeholder="dB" id="kfvV"/>
+     <button class="mini-btn" id="kfvAdd">+</button></div>
+   </div>
+
+   <div class="ectl tabpane" id="tp-overlays">
+    <div class="big">🔤 Global text (whole sequence)</div>
+    <div id="txtRows"></div>
+    <button class="mini-btn" id="txtAdd">＋ Add text</button>
+    <div class="big" style="margin-top:16px">🖼 Overlays (images / shapes / GIF)</div>
+    <div class="librow">
+     <button class="mini-btn" data-shape="rect">▭</button>
+     <button class="mini-btn" data-shape="circle">⬤</button>
+     <button class="mini-btn" data-shape="triangle">▲</button>
+     <button class="mini-btn" data-shape="star">★</button>
+     <button class="mini-btn" data-shape="arrow">➜</button>
+     <button class="mini-btn" data-shape="line">▬</button>
+     <label class="mini-btn" style="margin:0">📤 Image/GIF
+      <input type="file" id="ovFile" accept="image/*" hidden/></label>
+    </div>
+    <div id="ovRows"></div>
+    <button class="mini-btn" id="ovAdd" disabled>＋ Add overlay</button>
+   </div>
+
+   <div class="ectl tabpane" id="tp-export">
+    <div class="big">📦 Export</div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+     <label>Format<select id="exFmt"><option>mp4</option><option>mov</option>
+      <option>mkv</option><option>webm</option><option>gif</option></select></label>
+     <label>Aspect<select id="exAsp"><option value="16:9">16:9</option>
+      <option value="9:16">9:16</option><option value="1:1">1:1</option></select></label>
+     <label>FPS<select id="exFps"><option>24</option><option>30</option>
+      <option selected>60</option></select></label>
+     <label>Codec<select id="exCodec"><option>h264</option><option>hevc</option></select></label>
+     <label>CRF<input id="exCrf" type="number" value="19"/></label>
+     <label>Audio kbps<input id="exAb" type="number" value="192"/></label>
+     <label class="sw" style="align-self:end"><input id="exHw" type="checkbox"/><i></i>GPU enc</label>
+     <label class="sw" style="align-self:end"><input id="exNorm" type="checkbox" checked/><i></i>Normalize</label>
+     <label class="sw" style="align-self:end"><input id="exTk" type="checkbox"/><i></i>+TikTok copy</label>
+    </div>
+    <div class="row"><span class="flex1"></span>
+     <button id="renderAll" class="cta sm">🎬 Render sequence</button></div>
+    <p class="hint" id="statusLine"></p>
+    <div class="result hidden" id="resultBox">
+     <video id="resultVid" controls playsinline style="width:100%;border-radius:12px"/>
+     <a class="mini-btn accent" id="dlBtn" download style="margin-top:8px">⬇ Download</a>
+    </div>
    </div>
   </section>
+
   <section>
    <div class="ectl">
-    <div class="big">✂️ Trim &amp; Speed</div>
-    <div class="grid" style="grid-template-columns:1fr 1fr">
-     <label>In (s)<input id="t0" type="number" value="0" min="0" step="0.1"/></label>
-     <label>Out (s)<input id="t1" type="number" min="0" step="0.1"/></label>
-    </div>
-    <div class="slider" style="margin-top:10px"><label>Speed
-     <b class="val" id="spdOut">1.0×</b></label>
-     <input id="speed" type="range" min="0.5" max="2" step="0.05" value="1"/></div>
-   </div>
-   <div class="ectl">
-    <div class="big">🎨 Look</div>
-    <div class="slider"><label>Brightness <b class="val" id="bOut">0.00</b></label>
-     <input id="bright" type="range" min="-0.3" max="0.3" step="0.01" value="0"/></div>
-    <div class="slider" style="margin-top:10px"><label>Contrast <b class="val" id="cOut">1.00</b></label>
-     <input id="contrast" type="range" min="0.6" max="1.6" step="0.01" value="1"/></div>
-    <div class="slider" style="margin-top:10px"><label>Saturation <b class="val" id="sOut">1.00</b></label>
-     <input id="sat" type="range" min="0" max="2" step="0.01" value="1"/></div>
-    <div class="grid" style="margin-top:12px">
-     <label>Aspect<select id="aspect">
-      <option value="original">Original</option><option value="9:16">9:16</option>
-      <option value="16:9">16:9</option><option value="1:1">1:1</option></select></label>
-     <label class="sw" style="align-self:end"><input id="enhance" type="checkbox"/><i></i>✨ Crisp</label>
+    <div class="big">🎵 Music bed (sequence-wide)</div>
+    <div class="librow"><input type="text" id="musQ" placeholder="search library…"/>
+     <button class="mini-btn" id="musRefresh">↻</button></div>
+    <div id="musList"></div>
+    <div class="grid" style="margin-top:8px;grid-template-columns:1fr 90px">
+     <label class="sw" style="align-self:end"><input id="musOn" type="checkbox"/><i></i>Use music</label>
+     <label>Vol dB<input id="musV" type="number" value="-14"/></label>
     </div>
    </div>
    <div class="ectl">
-    <div class="big">🔤 Text overlays (up to 2)</div>
-    <div class="grid" style="grid-template-columns:1fr 84px 84px">
-     <label>Text 1<input class="txt" id="txt1" placeholder="e.g. WAIT FOR IT 😱"/></label>
-     <label>Y %<input id="y1" type="number" value="85" min="2" max="96"/></label>
-     <label>Show until<input id="tt1" type="number" value="3" step="0.5"/></label>
-    </div>
-    <div class="grid" style="grid-template-columns:1fr 84px 84px;margin-top:10px">
-     <label>Text 2<input class="txt" id="txt2" placeholder="(optional)"/></label>
-     <label>Y %<input id="y2" type="number" value="15" min="2" max="96"/></label>
-     <label>Show until<input id="tt2" type="number" value="3" step="0.5"/></label>
-    </div>
-   </div>
-   <div class="ectl">
-    <div class="big">🔊 Audio &amp; Fades</div>
-    <div class="grid">
-     <label class="sw"><input id="mute" type="checkbox"/><i></i>Mute audio</label>
-     <label>Volume dB<input id="vol" type="number" value="0" step="1"/></label>
-     <label>Fade in (s)<input id="fin" type="number" value="0" min="0" step="0.1"/></label>
-     <label>Fade out (s)<input id="fout" type="number" value="0.4" min="0" step="0.1"/></label>
-    </div>
+    <div class="big">📚 Media library <span class="dim">(click = add to sequence)</span></div>
+    <div class="librow"><input type="text" id="libQ" placeholder="search…"/>
+     <label class="mini-btn" style="margin:0">📤 Import
+      <input type="file" id="impFile" hidden/></label></div>
+    <div id="libList"></div>
    </div>
   </section>
  </div>
