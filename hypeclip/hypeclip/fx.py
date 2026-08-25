@@ -128,25 +128,23 @@ class Graph:
         self.cur = nxt
 
 
-def _zoom_expression(punch_t, fps, punch_amp, kicks, kick_amp):
-    terms = [f"{punch_amp:.3f}*exp(-4*(in-{punch_t * fps:.0f})/{fps})"
-             f"*gte(in,{punch_t * fps:.0f})"]
+def _zoom_expression(punch_t, punch_amp, kicks, kick_amp):
+    """Time-based (seconds) decay envelope - smooth via crop expressions."""
+    terms = [f"{punch_amp:.3f}*exp(-4*(t-{punch_t:.2f}))"
+             f"*gte(t,{punch_t:.2f})"]
     for kt in kicks[:6]:
-        terms.append(f"{kick_amp:.3f}*exp(-9*(in-{kt * fps:.0f})/{fps})"
-                     f"*gte(in,{kt * fps:.0f})")
+        terms.append(f"{kick_amp:.3f}*exp(-9*(t-{kt:.2f}))"
+                     f"*gte(t,{kt:.2f})")
     return "min(2.4,max(1.0,1+" + "+".join(terms) + "))"
 
 
 _SUB_POS = {"tl": "x=28:y=28", "tr": "x=W-w-28:y=28",
             "bl": "x=28:y=H-h-28", "br": "x=W-w-28:y=H-h-28"}
 
-# ------------------------------------------------------------------ ring
 _RING_RX = re.compile(r"([\d.]+)\s+overlay\s+([xy])\s+(-?\d+);")
 
 
 def _parse_ring_cmd(path):
-    """Director's cmd file: '{rel_t} overlay x {px};' / '... y {py};'
-    -> merged sorted [(rel_t, px, py)]."""
     xs, ys = {}, {}
     try:
         with open(path, encoding="utf-8") as f:
@@ -163,20 +161,28 @@ def _parse_ring_cmd(path):
         return []
     out = []
     for t in ts:
-        kx = min((abs(t - k), k) for k in xs)[1] if xs else None
-        ky = min((abs(t - k), k) for k in ys)[1] if ys else None
-        out.append((t,
-                    xs[kx] if kx is not None else 0,
-                    ys[ky] if ky is not None else 0))
+        kx = min(xs, key=lambda k: abs(k - t)) if xs else None
+        ky = min(ys, key=lambda k: abs(k - t)) if ys else None
+        out.append((t, xs.get(kx, 0), ys.get(ky, 0)))
     return out
 
 
 def _axis_expr(pts, idx):
-    """Nested if() ladder: piecewise-constant tracking path."""
     expr = str(pts[-1][idx])
     for p in reversed(pts[:-1]):
         expr = f"if(lt(t,{p[0]:.2f}),{p[idx]},{expr})"
     return expr
+
+
+def _wm_text(plan):
+    wt = plan.get("watermark_text")
+    if wt:
+        return str(wt)
+    try:
+        from .licensing import is_licensed
+        return "" if is_licensed() else "HypeClip"
+    except Exception:
+        return ""          # fail-open: never break rendering over licensing
 
 
 def _run_ffmpeg_progress(cmd, dur, reporter):
@@ -226,6 +232,7 @@ def render_clip(plan, reporter) -> None:
     has_music = bool(music.get("file"))
     has_wm = bool(plan.get("watermark"))
     has_sub = bool(sub.get("file")) and os.path.isfile(sub["file"])
+    wm_text = _wm_text(plan)
     try:
         nvidia = has_nvenc()
     except Exception:
@@ -253,12 +260,11 @@ def render_clip(plan, reporter) -> None:
     att_pts = _parse_ring_cmd(att.get("cmd_file") or "") \
         if att.get("cmd_file") else []
     ring_png = att.get("ring_png") or ""
-    ring_ready = (bool(ring_png) and os.path.isfile(ring_png)
-                  and len(att_pts) >= 2 and bool(att.get("end")))
-    if att and not enhance_applied and ring_ready:
-        pass
-    elif att:
-        why = "heavy-enhance reframed the footage" if enhance_applied \
+    att_ready = (bool(ring_png) and os.path.isfile(ring_png)
+                 and len(att_pts) >= 2 and bool(att.get("end"))
+                 and not enhance_applied)
+    if att and not att_ready:
+        why = "heavy-enhance reframed footage" if enhance_applied \
             else "tracking data unavailable"
         reporter.log(f"(attention ring skipped: {why})")
 
@@ -284,12 +290,10 @@ def render_clip(plan, reporter) -> None:
                 g.step(f"crop={cw}:{ch}:x='(iw-ow)/2':y=(ih-oh)/2")
         else:
             g.step(f"crop={cw}:{ch}:x='(iw-ow)/2':y=(ih-oh)/2")
-    elif enhance_applied:
-        reporter.log("(framing already baked in by AI enhance)")
 
     g.step(f"fps={fps}")
 
-    # ---------------- motion ----------------
+    # ---------------- motion (shimmer-free punch-ins) ----------------
     kicks = []
     punch_amp = 0.0
     if plan["zoom_punch"]:
@@ -300,14 +304,15 @@ def render_clip(plan, reporter) -> None:
             window=(0.4, max(0.5, dur - 0.8)), min_gap=1.2)[:5]
 
     if punch_amp > 0 or kicks:
-        ss = 1.6 if punch_amp > 0 else 1.25
-        g.step(f"scale={int(W * ss) // 2 * 2}:-2:flags=lanczos")
-        zexpr = _zoom_expression(float(plan["impact_t"]), fps, punch_amp,
+        zexpr = _zoom_expression(float(plan["impact_t"]), punch_amp,
                                  kicks,
                                  0.10 + 0.10 * float(plan["zoom_strength"]))
-        g.step(f"zoompan=z='{zexpr}'"
-               f":x='iw/2-(iw/zoom)/2':y='ih/2-(ih/zoom)/2'"
-               f":d=1:s={W}x{H}:fps={fps}")
+        g.step(f"scale={W}:{H}:flags=lanczos,setsar=1")
+        g.step(
+            f"crop=w='iw/max(1.000001,{zexpr})':"
+            f"h='ih/max(1.000001,{zexpr})':"
+            f"x='(iw-ow)/2':y='(ih-oh)/2',"
+            f"scale={W}:{H}:flags=lanczos")
     else:
         g.step(f"scale={W}:{H}:flags=lanczos")
 
@@ -321,7 +326,7 @@ def render_clip(plan, reporter) -> None:
             f":y='(ih-oh)/2+{amp * 0.6}*exp(-2.2*abs(t-{T}))*cos(33*t)'"
             f",scale={W}:{H}")
 
-    # ---------------- light enhance / grade ----------------
+    # ---------------- light enhance / grade / bloom ----------------
     if plan.get("enhance") and plan.get("enhance_mode", "light") == "light":
         g.step(ENHANCE_LIGHT)
     grade = GRADES.get(plan.get("look", "none"), "")
@@ -389,8 +394,7 @@ def render_clip(plan, reporter) -> None:
 
     # ---------------- attention ring (Director) ----------------
     att_applied = False
-    ring_idx = 0
-    if ring_ready:
+    if att_ready:
         ring_idx = 1 + len(sfx_events) + (1 if has_music else 0) \
             + (1 if has_wm else 0) + (1 if has_sub else 0)
         xe = _axis_expr(att_pts, 1)
@@ -408,6 +412,14 @@ def render_clip(plan, reporter) -> None:
 
     if plan.get("subs"):
         g.step(f"ass={ff_filter_path(plan['subs'])}")
+
+    # ---------------- watermark text (free tier) ----------------
+    if wm_text:
+        g.step(
+            f"drawtext=text='{esc_drawtext(wm_text)}'"
+            f":fontsize={int(H * 0.022)}:fontcolor=white@0.55"
+            f":borderw=max(2\\,(h//400)):bordercolor=black@0.5"
+            f":x=w-text_w-{int(H * 0.03)}:y=h-text_h-{int(H * 0.02)}'")
 
     g.step("fade=t=out:st=%.2f:d=0.35" % max(0, dur - 0.4))
     g.step("format=yuv420p")
@@ -477,5 +489,6 @@ def render_clip(plan, reporter) -> None:
     reporter.log(f"FX render ({plan.get('look')}"
                  + ("," + ",".join(tags) if tags else "") + ")"
                  + (" +subscribe" if has_sub else "")
+                 + (" +wm" if wm_text else "")
                  + f" - {dur:.0f}s @ {W}x{H}{fps}")
     _run_ffmpeg_progress(cmd, dur, reporter)
