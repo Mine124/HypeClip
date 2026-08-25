@@ -693,3 +693,74 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   }catch(e){toast("couldn't collect logs","err");}};
  document.body.append(b);
 })();
+/* ======== 🎚 Style Profiles ======== */
+(function(){
+ const st=document.createElement("style");st.textContent=`
+ .sty-btn{position:fixed;left:20px;bottom:108px;z-index:45}
+ .sty-panel{position:fixed;left:20px;bottom:152px;z-index:46;width:340px;
+  background:#0d1019f5;border:1px solid rgba(255,255,255,.12);border-radius:16px;
+  padding:16px;display:none;box-shadow:0 24px 60px -12px #000d;
+  backdrop-filter:blur(14px)}
+ .sty-panel.open{display:block}
+ .sty-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+ .sty-panel input[type=file]{display:none}`;
+ document.head.append(st);
+ const lb=document.createElement("button");lb.className="mini-btn sty-btn";
+ lb.textContent="🎚 Styles";document.body.append(lb);
+ const lp=document.createElement("div");lp.className="sty-panel";
+ lp.innerHTML=`<b style="font-size:13px">Learn editing style from references</b>
+  <p class="hint">Upload clips whose editing you love (yours or licensed).
+  After building, the profile auto-tunes zoom/shake/SFX/effects.</p>
+  <div class="sty-row"><label class="mini-btn" style="margin:0">📤 Add ref
+   <input type="file" id="styFile" accept="video/*"/></label>
+   <span id="styRefs" class="dim">0 refs staged</span></div>
+  <div class="sty-row"><input id="styName" placeholder="profile name"
+   style="flex:1;background:#0b0d15;color:#fff;border:1px solid rgba(255,255,255,.13);
+   border-radius:9px;padding:9px 11px;font-size:13px"/>
+   <button class="mini-btn accent" id="styBuild">Build</button></div>
+  <div id="styList" class="hint" style="margin-top:10px"></div>`;
+ document.body.append(lp);
+ lb.onclick=()=>lp.classList.toggle("open");
+ let refs=[];
+ $("#styFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const fd=new FormData();fd.append("file",f);
+  const r=await(await fetch("/api/style/upload_ref",{method:"POST",body:fd})).json();
+  refs.push(r.ref);
+  $("#styRefs").textContent=refs.length+" ref(s) staged";
+  toast("reference added","ok");});
+ $("#styBuild").onclick=async()=>{
+  const name=$("#styName").value.trim();
+  if(!refs.length)return toast("add reference clips first","err");
+  const nm=name||("style-"+Date.now().toString(36));
+  const r=await(await fetch("/api/style/build",{method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({name:nm,refs})})).json();
+  if(r.ok){toast(`profile built · intensity ${r.profile.intensity}`,"ok");
+   refs=[];$("#styRefs").textContent="0 refs staged";refresh();}
+  else toast(r.detail||"failed","err");};
+ async function refresh(){
+  const list=await(await fetch("/api/style/list")).json();
+  $("#styList").innerHTML=list.map(p=>
+   `<div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+    <span style="flex:1"><b>${p.name}</b>
+    <span class="dim">· I=${p.intensity} · ${p.refs} refs</span></span>
+    <button class="mini-btn accent" data-ap="${p.name}">Apply</button></div>`).join("")
+   ||'<span class="dim">no profiles yet</span>';
+  $$("#styList [data-ap]").forEach(b=>b.onclick=async()=>{
+   const pr=await(await fetch("/api/style/get?name="+
+    encodeURIComponent(b.dataset.ap))).json();
+   localStorage.setItem("hc_style",JSON.stringify(pr));
+   toast(`"${b.dataset.ap}" armed — applies to next job`,"ok");});}
+ refresh();
+
+ /* merge armed profile into every job submission */
+ const _opts=opts;
+ opts=function(){
+  const base=_opts();
+  try{
+   const pr=JSON.parse(localStorage.getItem("hc_style")||"null");
+   if(pr&&pr.overrides)Object.assign(base,pr.overrides);
+  }catch(e){}
+  return base;};
+})();
