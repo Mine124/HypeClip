@@ -558,3 +558,183 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   b.append(s);setTimeout(()=>s.remove(),600);
  });
 })();
+/* ======== 🧠 Intelligence Pack: rich cards + batch + assistant + templates ======== */
+(function(){
+ /* ---- richer clip cards ---- */
+ const CAT_EMOJI={funny:"😂",clutch:"🎯",win:"🏆",fail:"💀",rage:"😡",
+  reaction:"😲",highlight:"⭐"};
+ const _add=addClip;
+ addClip=function(c,sel){
+  const grid=$(sel);if(!grid||grid.querySelector(`[data-f="${CSS.escape(c.file)}"]`))return;
+  const el=document.createElement("div");el.className="clip";el.dataset.f=c.file;
+  const cat=c.category||"highlight";
+  el.innerHTML=`<video src="${c.url}" ${c.thumb?`poster="${c.thumb}"`:""}
+    preload="metadata" muted loop playsinline></video>
+   <div class="meta"><span class="badge">${c.viral!=null&&c.viral!==""?
+    `V${c.viral}`:`🔥 ${c.score}`}</span>
+   <span class="badge" style="background:#7c5cff22;color:#c4b5fd">
+    ${CAT_EMOJI[cat]||"⭐"} ${cat}</span>
+   <span>${c.duration}s</span>
+   <div class="btns"><button class="icon-btn" data-meta="${c.file}"
+    title="copy title+hashtags">📋</button>
+   <a class="icon-btn" href="${c.url}" download="${c.file}">save</a></div></div>`;
+  if(c.thumbs&&c.thumbs.length>1){
+   const th=document.createElement("div");
+   th.style.cssText="display:flex;gap:6px;padding:6px 12px";
+   c.thumbs.forEach(u=>{const im=document.createElement("img");
+    im.src=u;im.style.cssText="width:31%;border-radius:6px;cursor:pointer";
+    im.onclick=()=>open(u,"_blank");th.append(im);});
+   el.querySelector(".meta").before(th);}
+  const v=el.querySelector("video");
+  el.onmouseenter=()=>v.play().catch(()=>{});
+  el.onmouseleave=()=>{v.pause();v.currentTime=0;};
+  el.querySelector("[data-meta]").onclick=async()=>{
+   const m=c.meta||{};
+   const txt=[m.title,m.desc,m.hashtags].filter(Boolean).join("\n\n");
+   await navigator.clipboard.writeText(txt);
+   toast(`metadata copied (SEO ${m.seo||""})`,"ok");};
+  grid.prepend(el);};
+
+ /* ---- batch queue: multiline links ---- */
+ const _start=start;
+ let QUEUE=[],pumping=false;
+ const waitDone=()=>new Promise(res=>{const t=setInterval(async()=>{
+  if(!jobId){clearInterval(t);res();return;}
+  try{const j=await(await fetch("/api/jobs/"+jobId)).json();
+   if(["done","error","stopped"].includes(j.state)){clearInterval(t);res();}}
+  catch(e){}},1500);});
+ async function pump(){if(pumping)return;pumping=true;
+  while(QUEUE.length){const u=QUEUE.shift();
+   toast(`batch: starting ${u.slice(0,48)}…`);
+   $("#urlInput").value=u;await _start();await waitDone();}
+  pumping=false;toast("batch complete 🎉","ok");}
+ start=async function(){
+  const raw=$("#urlInput").value.trim();
+  const links=raw.split(/\s+/).filter(x=>/^https?:\/\//i.test(x));
+  if(links.length>1){QUEUE.push(...links);
+   toast(`queued ${links.length} links — processing one-by-one`,"ok");
+   $("#urlInput").value="";
+   if(!activeJob)pump();return;}
+  await _start();if(QUEUE.length&&!pumping)pump();};
+
+ /* ---- 🪄 AI assistant ---- */
+ const st=document.createElement("style");st.textContent=`
+ .askrow{display:flex;gap:8px;margin-top:10px}
+ .askrow input{flex:1;background:#0a0c13;border:1px solid rgba(255,255,255,.13);
+  border-radius:10px;padding:11px 14px;color:#fff;outline:none;font-size:13.5px}
+ .askrow input:focus{border-color:#7c5cff}`;
+ document.head.append(st);
+ const row=document.createElement("div");row.className="askrow";
+ row.innerHTML=`<input id="aiAsk"
+  placeholder='🪄 Ask: "make it cinematic, shorter, more clips, vertical…"'/>`;
+ $(".srcrow").after(row);
+ const APPLY=[
+  [/cinematic/,o=>{o.fx_look="cinematic";o.bloom=true;o.grain=true;o.vignette=true;
+    return"cinematic grade+bloom+grain";}],
+  [/gaming/,o=>{o.fx_look="capcut";o.zoom_punch=true;o.beat_sync=true;
+    o.shake=.5;o.sfx_volume_db=8;return"gaming punch style";}],
+  [/funny|meme/,o=>{o.flash_intro=true;o.zoom_punch=true;
+    o.caption_style="karaoke";return"funny style (flash+karaoke)";}],
+  [/minimal|clean|no filter/,o=>{o.fx_look="none";o.bloom=false;o.grain=false;
+    o.vignette=false;o.zoom_punch=false;o.beat_sync=false;
+    o.flash_intro=false;return"clean minimal look";}],
+  [/vertical|tiktok|shorts|9:16/,o=>{o.aspect="9:16";return"vertical 9:16";}],
+  [/horizontal|youtube|16:9|landscape/,o=>{o.aspect="16:9";return"wide 16:9";}],
+  [/square/,o=>{o.aspect="1:1";return"square 1:1";}],
+  [/shorter/,o=>{o.clip_duration=Math.max(15,o.clip_duration*.7);
+    return"shorter clips";}],
+  [/longer/,o=>{o.clip_duration=Math.min(180,o.clip_duration*1.3);
+    return"longer clips";}],
+  [/more clips/,o=>{o.max_clips=Math.min(20,(+$("#optClips").value||5)+2);
+    return"more clips";}],
+  [/fewer|less clips/,o=>{o.max_clips=Math.max(1,(+$("#optClips").value||5)-2);
+    return"fewer clips";}],
+  [/no caption|captions off/,o=>{o.autocaptions=false;return"captions off";}],
+  [/caption/,o=>{o.autocaptions=true;return"captions on";}],
+  [/no sfx|sfx off/,o=>{o.sfx_enabled=false;return"SFX off";}],
+  [/sfx|sound effect/,o=>{o.sfx_enabled=true;return"SFX on";}],
+  [/heavy|ultra crisp|max quality/,o=>{o.enhance=true;o.enhance_mode="heavy";
+    return"Heavy neural enhance (slow!)";}],
+  [/crisp|enhance|sharp/,o=>{o.enhance=true;o.enhance_mode="light";
+    return"Light enhance";}],
+  [/fast render|quick render/,o=>{o.max_height=720;o.fps=30;o.bloom=false;
+    return"fast-render mode 720p30";}],
+  [/1080|hd/,o=>{o.max_height=1080;return"1080p";}],
+  [/autopilot off|manual/,o=>{o.auto_render=false;
+    return"manual review mode";}],
+  [/autopilot|auto pilot/,o=>{o.auto_render=true;return"autopilot on";}],
+ ];
+ function setOpt(key,val){
+  const map={aspect:null,fx_look:"#optLook",caption_style:"#optCapStyle",
+   max_height:"#optHeight",fps:"#optFps",max_clips:"#optClips",
+   clip_duration:"#optDur",pre_roll:"#optPre",hype_threshold:"#optSens"};
+  const id=map[key];
+  if(id&&$(id)){$(id).value=val;if($(id).type==="range")paint($(id));return;}
+  if(key==="aspect"){setA(val);return;}
+  const cb={"autocaptions":"#optCaps","sfx_enabled":"#optSfx",
+   "zoom_punch":"#optZoom","beat_sync":"#optBeat","flash_intro":"#optFlash",
+   "bloom":"#optBloom","grain":"#optGrain","vignette":"#optVig",
+   "auto_render":"#optAuto"}[key];
+  if(cb&&$(cb)){ $(cb).checked=!!val; $(cb).dispatchEvent(new Event("change"));}
+ }
+ function setA(a){$$("#segAspect button").forEach(x=>
+  x.classList.toggle("active",x.dataset.a===a));}
+ $("#aiAsk").addEventListener("keydown",async e=>{
+  if(e.key!=="Enter")return;
+  const q=e.target.value.trim().toLowerCase();if(!q)return;
+  const o=opts();const done=[];
+  for(const[rx,fn]of APPLY){if(rx.test(q)){
+   const msg=fn(o);if(msg)done.push(msg);markCustom&&markCustom();}}
+  if(/\b(\d{2,3})\s*(s|sec|second)/.test(q)){
+   const m=q.match(/\b(\d{2,3})\s*(s|sec)/);o.clip_duration=+m[1];
+   done.push(o.clip_duration+"s clips");}
+  for(const[k,v]of Object.entries(o))setOpt(k,v);
+  e.target.value="";
+  toast(done.length?"🪄 "+done.join(" · "):
+   "try: cinematic · gaming · funny · minimal · vertical · shorter · "+
+   "more clips · captions off · heavy crisp · autopilot off · 60s",
+   done.length?"ok":"err");});
+
+ /* ---- 🧩 Templates ---- */
+ const tplRow=document.createElement("div");
+ tplRow.style.cssText="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap";
+ tplRow.innerHTML=`<select id="tplSel" style="max-width:170px">
+  <option value="">templates…</option></select>
+  <button class="mini-btn" id="tplSave">💾 Save</button>
+  <button class="mini-btn" id="tplLoad">📂 Load</button>
+  <button class="mini-btn danger" id="tplDel">🗑</button>`;
+ document.querySelector(".hero details.panel").prepend(tplRow);
+ const TKEY="hc_templates";
+ const tpls=()=>JSON.parse(localStorage.getItem(TKEY)||"{}");
+ const refreshTpl=()=>{
+  const s=tpls();$("#tplSel").innerHTML='<option value="">templates…</option>'+
+   Object.keys(s).map(k=>`<option>${k}</option>`).join("");};
+ refreshTpl();
+ $("#tplSave").onclick=()=>{
+  const name=prompt("Template name:","My Style");if(!name)return;
+  const s=tpls();s[name]=opts();localStorage.setItem(TKEY,JSON.stringify(s));
+  refreshTpl();toast(`template "${name}" saved 🧩`,"ok");};
+ $("#tplLoad").onclick=()=>{
+  const n=$("#tplSel").value;if(!n)return toast("pick a template first","err");
+  const s=tpls();applyOpts(s[n]||{});
+  toast(`template "${n}" loaded 🧩`,"ok");};
+ $("#tplDel").onclick=()=>{
+  const n=$("#tplSel").value;if(!n)return;
+  const s=tpls();delete s[n];localStorage.setItem(TKEY,JSON.stringify(s));
+  refreshTpl();toast("deleted");};
+ function applyOpts(o){
+  for(const[k,v]of Object.entries(o)){
+   if(k==="aspect"){setA(v);continue;}
+   const id={"fx_look":"#optLook","caption_style":"#optCapStyle",
+    "max_height":"#optHeight","fps":"#optFps","max_clips":"#optClips",
+    "clip_duration":"#optDur","pre_roll":"#optPre",
+    "hype_threshold":"#optSens"}[k];
+   const cb={"autocaptions":"#optCaps","sfx_enabled":"#optSfx",
+    "zoom_punch":"#optZoom","beat_sync":"#optBeat",
+    "flash_intro":"#optFlash","bloom":"#optBloom","grain":"#optGrain",
+    "vignette":"#optVig","auto_render":"#optAuto"}[k];
+   if(id&&$(id)){$(id).value=v;if($(id).type==="range")paint($(id));}
+   else if(cb&&$(cb)){$(cb).checked=!!v;$(cb).dispatchEvent(new Event("change"));}}
+  const em=document.getElementById("optEnhMode");
+  if(em&&o.enhance_mode)em.value=o.enhance_mode;}
+})();
