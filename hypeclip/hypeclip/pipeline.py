@@ -142,6 +142,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "smart_reframe": settings.smart_reframe,
         "sendcmd": os.path.join(work, f"c{idx}_cmd.txt"),
         "W": ctx["dims"][0], "H": ctx["dims"][1],
+        "enhance": bool(getattr(settings, "enhance", False)),
         "look": settings.fx_look, "bloom": settings.bloom,
         "grain": settings.grain, "vignette": settings.vignette,
         "zoom_punch": settings.zoom_punch,
@@ -204,8 +205,7 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
 
 def _scan_and_render(media_path, dur, title, settings: Settings,
                      r: Reporter, stop):
-    """Wizard loop: select rect -> scan -> [review] -> render.
-    With auto_render on, the review wait is skipped entirely."""
+    """Wizard loop: select rect -> scan -> [review unless autopilot] -> render."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
@@ -234,8 +234,7 @@ def _scan_and_render(media_path, dur, title, settings: Settings,
                  getattr(r, "last_series", None))
 
         if getattr(settings, "auto_render", False):
-            r.log("autopilot: peaks locked in - rendering now, "
-                  "no babysitting required")
+            r.log("autopilot: peaks locked in - rendering now")
             break
 
         cmd = r.wait_command()
