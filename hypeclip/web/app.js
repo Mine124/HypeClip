@@ -490,3 +490,22 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  const _open=openWizard;
  openWizard=function(){_open();if(typeof wizStep==="number")setStep(wizStep);};
 })();
+/* ======== ✨ Enhance (crisp) tick ======== */
+(function(){
+ try{
+  const grid=document.querySelector(".hero details .grid");
+  if(grid&&!document.getElementById("optEnh")){
+   const lab=document.createElement("label");
+   lab.className="sw";
+   lab.innerHTML='<input type="checkbox" id="optEnh" checked/><i></i>✨ Enhance (crisp)';
+   grid.append(lab);
+  }
+ }catch(e){}
+ const _origOpts=opts;
+ opts=function(){
+  const base=_origOpts();
+  const el=document.getElementById("optEnh");
+  base.enhance=el?el.checked:true;
+  return base;
+ };
+})();
