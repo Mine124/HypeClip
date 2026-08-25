@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.parse
 
-from . import audiohype, beats, captions, decide, downloader, editplan, fx, sfx
+from . import audiohype, audit, beats, captions, decide, downloader, fx, sfx
 from . import scan, sources, youtube
 from .captionstyle import CaptionStyle
 from .config import Settings
@@ -130,21 +130,26 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         except Exception:
             pass
 
-    # ---- DEAD-AIR SURGEON ----
+    # ================= DEAD-AIR SURGEON (with protection) =================
     mapping = None
     if dur >= 30:
         try:
-            pauses = decide.find_dead_air(wav)
+            prot = decide.find_protected_pauses(wav)
+            if prot:
+                r.log(f"🛡 protecting {len(prot)} comedic/suspense "
+                      f"pause(s) from the surgeon")
+            pauses = decide.find_dead_air(wav, protected=prot)
             removable = sum(b - a for a, b in pauses)
             if 0.8 <= removable <= dur * 0.30:
                 prep = os.path.join(work, f"c{idx}_prep.mp4")
                 built, mapping = decide.build_trimmed(
-                    src, prep, start, dur, pauses)
+                    src, prep, start, dur, pauses, protected=prot)
                 if built:
-                    r.log(f"✂ removed {removable:.0f}s of dead air")
+                    r.log(f"✂ removed {removable:.0f}s of dead air "
+                          f"({len(pauses)} pauses)")
                     dur = mapping["new_dur"]
-                    src = built
                     start = 0.0
+                    src = built
                     if segs:
                         for s in segs:
                             s["start"] = decide.remap(s["start"], mapping)
@@ -154,7 +159,6 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                                     w["s"] = decide.remap(w["s"], mapping)
                                     w["e"] = decide.remap(w["e"], mapping)
                         segs = [s for s in segs if s["end"] > 0.1]
-                    shutil.copyfile(built, wav.replace(".wav", "_src.wav"))
         except Exception as e:  # noqa: BLE001
             r.log(f"(dead-air surgery skipped: {e})")
 
@@ -163,25 +167,35 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         cs = CaptionStyle.load_active()
         if pre_cat == "reaction":
             cs.d["effect"] = "fade"
-            cs.d["censor"] = False
             r.log("🧭 captions calmed (fade) - emotional tone")
         subs_path = os.path.join(work, f"c{idx}.ass")
         captions.write_ass(segs, subs_path, cs, *ctx["dims"])
 
-    # ================= EDITPLAN (the brain) =================
-    plan_updates, dlog = editplan.build(
-        media_src=src, start=start, dur=dur, wav=wav,
-        segments=segs, settings=settings, r=r,
-        category=pre_cat, caption_texts=caption_texts,
-        ctx=ctx, idx=idx)
-    for line in dlog:
-        r.log(line)
+    # ---- SFX taste engine (transient-aligned) ----
+    events: list = []
+    if settings.sfx_enabled:
+        pool = sfx.list_sfx(settings.sfx_dir)
+        if pool:
+            try:
+                events, notes = decide.sfx_plan(
+                    wav, caption_texts, settings, r, pool,
+                    protected=decide.find_protected_pauses(wav))
+                for nt in notes:
+                    r.log("🧭 " + nt)
+            except Exception as e:  # noqa: BLE001
+                r.log(f"(sfx engine fallback: {e})")
+                pool = pool
+                impact_fb = min(max(settings.pre_roll, 0.2), dur - 0.5)
+                if pool:
+                    events = [{"t": impact_fb, "file": pool[0],
+                               "gain_db": settings.sfx_volume_db}]
 
     music = None
     if settings.music_file and os.path.isfile(settings.music_file):
         music = {"file": settings.music_file,
                  "volume_db": settings.music_volume_db,
                  "duck": settings.duck_music}
+
     sub = None
     if getattr(settings, "sub_name", ""):
         from .config import DATA_DIR
@@ -193,8 +207,26 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                    "pos": settings.sub_pos,
                    "t0": 0.5 if settings.sub_when == "start"
                         else max(0.3, dur - settings.sub_dur - 0.3)}
+
     wm = settings.watermark_file if settings.watermark_file and \
         os.path.isfile(settings.watermark_file) else None
+
+    # ---- PACING DOCTRINE (continuous intensity) ----
+    doc = decide.pacing_plan(pre_cat, 70)
+    r.log(f"🧭 doctrine[{pre_cat}] ({doc.get('intensity', 0.5)}): "
+          f"{doc['note']}")
+    zoom_on = settings.zoom_punch and doc["zoom"]
+    do_punch, amp, zreason = decide.punch_decision(
+        pre_cat, int(_clamp(score, 0, 99)), doc.get("intensity", 0.5))
+    if do_punch and doc["zoom"]:
+        zoom_on = True
+        r.log(f"🧭 punch-in: {zreason} ({int(amp * 100)}%)")
+    shake_v = settings.shake if doc["shake"] else 0.0
+    flash_v = settings.flash_intro and doc["flash"]
+    bloom_v = settings.bloom and doc["bloom"]
+    grain_v = settings.grain and doc["grain"]
+    vig_v = settings.vignette and doc["vignette"]
+    beat_v = settings.beat_sync and doc["beat"]
 
     plan = {
         "src": src, "dest": os.path.join(work, f"c{idx}_fin.mp4"),
@@ -205,17 +237,25 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "W": ctx["dims"][0], "H": ctx["dims"][1],
         "enhance": bool(getattr(settings, "enhance", False)),
         "enhance_mode": getattr(settings, "enhance_mode", "light"),
-        "look": settings.fx_look,
+        "look": settings.fx_look, "bloom": bloom_v,
+        "grain": grain_v, "vignette": vig_v,
+        "zoom_punch": zoom_on, "zoom_strength": settings.zoom_strength,
+        "shake": shake_v,
+        "impact_t": min(settings.pre_roll, dur * 0.6),
+        "beat_sync": beat_v, "flash_intro": flash_v,
         "title": settings.title_text.replace("{score}", str(int(score))),
         "progress_bar": settings.progress_bar, "watermark": wm,
         "subscribe": sub,
-        "subs": subs_path, "music": music, "wav": wav,
+        "subs": subs_path, "sfx_events": events, "music": music,
+        "wav": wav,
     }
-    plan.update(plan_updates)          # sfx_events / zoom / doctrine flags
 
     trk = (ctx.get("tracks_by_index") or {}).get(idx)
-    if trk and not mapping:
+    if trk and not mapping:      # tracking timeline breaks after surgery
         plan["track_cmd"] = trk["cmd_file"]
+    elif trk and mapping:
+        r.log("(eagle-eye skipped on this clip: timeline was surgically "
+              "edited)")
 
     fx.render_clip(plan, r)
 
@@ -234,6 +274,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
             "duration": round(probe_duration(dest), 1),
             "score": round(score, 1), "start": round(start, 1)}
 
+    # ---- intelligence pass ----
     try:
         from . import intel
         stem = os.path.splitext(os.path.basename(dest))[0]
@@ -249,12 +290,18 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     except Exception as e:  # noqa: BLE001
         r.log(f"(intelligence pass skipped: {e})")
 
+    # ---- retention prediction + critic ----
     try:
         db = intel.audio_db(wav)
         feats = decide.features_from_db(db, 0.0, dur, score, caption_texts)
         rt = decide.predict(feats)
         clip["retention"] = rt
-        issues = decide.critique(feats, rt, [], pre_cat)
+        issues = decide.critique(
+            feats, rt,
+            [k for k, on in (("zoom", zoom_on), ("shake", shake_v > 0),
+                             ("flash", flash_v), ("bloom", bloom_v),
+                             ("grain", grain_v)) if on],
+            pre_cat)
         if issues:
             r.log("🔍 critic: " + " · ".join(issues))
         r.log(f"📈 predicted: watch {rt['avg_watch_pct']}% · "
@@ -263,8 +310,25 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     except Exception as e:  # noqa: BLE001
         r.log(f"(prediction skipped: {e})")
 
+    # ================= RENDER AUDIT + QUARANTINE GATE =================
+    try:
+        rep_a = audit.audit_clip(dest, expected_dur=dur)
+        clip["audit"] = rep_a
+        if rep_a["issues"]:
+            r.log("🔍 audit: " + " · ".join(rep_a["issues"]))
+        if rep_a["quarantine"]:
+            qp = audit.quarantine_move(
+                dest, "; ".join(rep_a["issues"]) or "low quality score")
+            r.log(f"🚫 quarantined -> Data\\quarantine\\"
+                  f"{os.path.basename(qp)} (quality gate failed)")
+            clip["quarantined"] = True
+        else:
+            r.log("🔍 audit passed")
+    except Exception as e:  # noqa: BLE001
+        r.log(f"(audit skipped: {e})")
+
     r.clip(clip)
-    r.log(f"saved {fname}")
+    r.log(f"saved {os.path.basename(clip['file'])}")
     return clip
 
 
@@ -293,35 +357,41 @@ def _vod(url, info, plat, settings, r, stop):
     work = os.path.join(settings.work_dir, key)
     os.makedirs(work, exist_ok=True)
     if os.getenv("HYPECLIP_FULL_DOWNLOAD") == "1":
+        r.log("full-download mode (HYPECLIP_FULL_DOWNLOAD=1)")
         path, _ = downloader.download_vod(
             url, work, settings, r,
             progress_cb=lambda f: r.progress(0.02 + 0.43 * (f or 0)))
         dur = probe_duration(path)
         r.media_ready(key, os.path.basename(path), dur)
-        return _scan_and_render(path, dur, info["title"], settings, r,
-                                stop, url=None)
+        return _scan_and_render(path, dur, info["title"],
+                                settings, r, stop, url=None)
     r.log("fast pass: lightweight preview first - HD fetched per-clip")
     path, _ = downloader.download_proxy(
         url, work, settings, r,
         progress_cb=lambda f: r.progress(0.02 + 0.38 * (f or 0)))
     dur = probe_duration(path)
     r.media_ready(key, os.path.basename(path), dur)
-    return _scan_and_render(path, dur, info["title"], settings, r,
-                            stop, url=url)
+    return _scan_and_render(path, dur, info["title"],
+                            settings, r, stop, url=url)
 
 
 def _scan_and_render(media_path, dur, title, settings, r, stop,
                      url=None, media_is_proxy=False):
+    """select -> scan -> intelligence -> [review unless autopilot] ->
+    per-clip HD fetch -> render -> audit."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
     proxy = media_is_proxy
+    track_point = None
 
     moments = []
     while True:
         sel = r.wait_selection()
         if stop is not None and stop.is_set():
             return []
+        track_point = sel.get("point") \
+            if sel.get("mode") == "track" else None
         r.stage("scan")
         r.progress(0.44)
         if sel.get("mode") == "audio":
@@ -336,12 +406,14 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                 r, sample_fps=float(getattr(settings, "scan_fps", 6)))
             moments = _analyze(analyzer, settings, r, dur)
 
+        # ---- smart boundaries + hooks ----
         try:
             from . import intel
             intel.adjust_boundaries(moments, media_path, settings, r)
         except Exception as e:  # noqa: BLE001
             r.log(f"(boundaries default: {e})")
 
+        # ---- retention-guided ending tightening ----
         try:
             from . import intel
             dbx = intel.audio_db(media_path)
@@ -359,6 +431,31 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         except Exception as e:  # noqa: BLE001
             r.log(f"(boundary revision skipped: {e})")
         r.progress(0.50)
+
+        # ---- Eagle-Eye camera follow ----
+        if sel.get("mode") == "track" and sel.get("point"):
+            try:
+                from . import tracker
+                pt = sel["point"]
+                ordered_m = sorted(
+                    moments, key=lambda x: x.start)[:int(settings.max_clips)]
+                tracks = {}
+                for i, m in enumerate(ordered_m):
+                    outp = os.path.join(ctx["work"], f"trk_{i}.txt")
+                    trk = tracker.build_track(
+                        media_path, m.start, m.end - m.start,
+                        (float(pt.get("x", 0.5)),
+                         float(pt.get("y", 0.5))),
+                        settings.aspect, outp)
+                    if trk:
+                        tracks[i] = trk
+                ctx["tracks_by_index"] = tracks
+                ai_used = any(t.get("ai") for t in tracks.values())
+                r.log(f"Eagle-Eye: camera follow built for "
+                      f"{len(tracks)}/{len(ordered_m)} clips"
+                      + (" (AI)" if ai_used else " (motion-fallback)"))
+            except Exception as e:  # noqa: BLE001
+                r.log(f"(tracking skipped: {e})")
 
         r.review([{"start": round(m.start, 1), "end": round(m.end, 1),
                    "peak": round(m.peak, 1), "score": round(m.score, 1)}
@@ -386,7 +483,8 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                     ctx["work"], settings, r, idx=i)
                 r.progress(0.50 + 0.08 * (i + 1) / max(1, len(ordered)))
             except Exception as e:  # noqa: BLE001
-                r.log(f"(HD segment {i + 1} failed: {e})")
+                r.log(f"(HD segment {i + 1} failed: {e}) - "
+                      f"rendering from preview quality")
 
     clips: list = [None] * len(ordered)
 
