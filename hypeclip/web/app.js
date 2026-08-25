@@ -738,3 +738,32 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   const em=document.getElementById("optEnhMode");
   if(em&&o.enhance_mode)em.value=o.enhance_mode;}
 })();
+/* ======== 🦅 Eagle-Eye click-to-track ======== */
+(function(){
+ const b=document.createElement("button");b.className="mini-btn";
+ b.id="btnTrack";b.textContent="🦅 Track object";b.disabled=true;
+ $("#btnScan").after(b);
+ const upd=()=>{b.disabled=$("#btnScan").disabled;};
+ new MutationObserver(upd).observe($("#btnScan"),{attributes:true});
+ setInterval(upd,600);
+ let armed=false;
+ $("#vidwrap").addEventListener("click",e=>{
+  if(!armed)return;
+  const r=$("#vidwrap").getBoundingClientRect();
+  const x=Math.min(.99,Math.max(.01,(e.clientX-r.left)/r.width));
+  const y=Math.min(.99,Math.max(.01,(e.clientY-r.top)/r.height));
+  armed=false;b.textContent="🦅 Track object";
+  toast(`target locked @ ${Math.round(x*100)}%,${Math.round(y*100)}%`,"ok");
+  fetch(`/api/jobs/${jobId}/select`,{method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({mode:"track",point:{x,y}})})
+   .then(()=>{setStep(2);
+    $("#btnScan").dataset.scanning="1";updateScanBtn();});});
+ b.onclick=()=>{
+  if(activeJob&&$("#btnScan").dataset.scanning==="1")
+   return toast("already scanning","err");
+  armed=!armed;
+  b.textContent=armed?"🎯 click the object…":"🦅 Track object";
+  if(armed){PVpause();toast("pause on a clear frame, then CLICK the target","ok");}
+  function PVpause(){try{$("#wizVideo").pause();}catch(e){}}};
+})();
