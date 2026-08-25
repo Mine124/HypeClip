@@ -275,4 +275,167 @@ def render_clip(plan: dict, reporter) -> None:
         g.step(f"scale={int(W * ss) // 2 * 2}:-2:flags=lanczos")
         zexpr = _zoom_expression(float(plan["impact_t"]), fps, punch_amp,
                                  kicks,
-                                 0.10 + 0.10 * f
+                                 0.10 + 0.10 * float(plan["zoom_strength"]))
+        g.step(f"zoompan=z='{zexpr}'"
+               f":x='iw/2-(iw/zoom)/2':y='ih/2-(ih/zoom)/2'"
+               f":d=1:s={W}x{H}:fps={fps}")
+    else:
+        g.step(f"scale={W}:{H}:flags=lanczos")
+
+    sh = float(plan.get("shake") or 0)
+    if sh > 0.01:
+        amp = int(4 + 26 * sh)
+        T = float(plan["impact_t"])
+        g.step(
+            f"crop=iw*0.96:ih*0.96"
+            f":x='(iw-ow)/2+{amp}*exp(-2.2*abs(t-{T}))*sin(41*t)'"
+            f":y='(ih-oh)/2+{amp * 0.6}*exp(-2.2*abs(t-{T}))*cos(33*t)'"
+            f",scale={W}:{H}")
+
+    # ---------------- LIGHT enhance (in-filtergraph) ----------------
+    if plan.get("enhance") and plan.get("enhance_mode", "light") == "light":
+        g.step(ENHANCE_LIGHT)
+
+    # ---------------- look ----------------
+    grade = GRADES.get(plan.get("look", "none"), "")
+    if grade:
+        g.step(grade)
+    if plan.get("bloom"):
+        a = g.cur
+        small_w = max(160, (W // 4) // 2 * 2)
+        small_h = max(90, (H // 4) // 2 * 2)
+        sigma_small = max(2.0, H / 280.0)
+        b = f"{a}_sm"
+        c = f"{a}_blur"
+        opacity = 0.28 + (0.10 if plan.get("look") == "vhs" else 0.0)
+        g.parts.append(
+            f"[{a}]split[{a}_o][{b}_raw];"
+            f"[{b}_raw]scale={small_w}:{small_h},gblur=sigma={sigma_small},"
+            f"scale={W}:{H}[{c}];"
+            f"[{a}_o][{c}]blend=all_mode=screen:all_opacity={opacity}"
+            f"[{a}_bl]")
+        g.cur = f"{a}_bl"
+    if plan.get("grain") and plan.get("look") != "vhs":
+        g.step("noise=alls=7:allf=t")
+    if plan.get("vignette"):
+        g.step("vignette=PI/4.6")
+
+    # ---------------- overlays ----------------
+    if plan.get("flash_intro"):
+        g.step("fade=t=in:st=0:d=0.16:color=white")
+    for bt in kicks[:5]:
+        g.step(f"fade=t=in:st={bt:.2f}:d=0.06:color=white")
+
+    title = (plan.get("title") or "").strip()
+    if title:
+        alpha = ("if(lt(t,0.25),(t-0.1)/0.15,"
+                 "if(lt(t,2.8),1,max(0,(3.2-t)/0.4)))")
+        yexpr = f"ih*0.72-{int(H * 0.03)}*clip((t-0.15)/0.5\\,0\\,1)"
+        g.step(f"drawtext=text='{esc_drawtext(title)}'"
+               f":fontsize={int(H * 0.062)}:fontcolor=white"
+               f":borderw={max(3, H // 200)}:bordercolor=black@0.65"
+               f":x='(w-text_w)/2':y='{yexpr}':alpha='{alpha}'")
+    if plan.get("progress_bar"):
+        g.step("drawbox=x=0:y=ih-8:w=iw:h=8:color=black@0.35:t=fill")
+        g.step(f"drawbox=x=0:y=ih-7:w='iw*clip(t/{dur:.2f}\\,0\\,1)':h=6:"
+               f"color=white@0.85:t=fill")
+
+    if has_wm:
+        wmi = 1 + len(sfx_events) + (1 if has_music else 0)
+        nxt = "wmov"
+        g.parts.append(
+            f"[{g.cur}][{wmi}:v]overlay=x=W-w-28:y=28"
+            f":enable='between(t,0.4,{dur:.2f})'[{nxt}]")
+        g.cur = nxt
+
+    if has_sub:
+        sii = 1 + len(sfx_events) + (1 if has_music else 0) \
+            + (1 if has_wm else 0)
+        t0 = float(sub.get("t0", 0.5))
+        sdur = float(sub.get("dur", 4.0))
+        t1 = min(dur - 0.2, t0 + sdur)
+        pos = _SUB_POS.get(sub.get("pos", "br"), _SUB_POS["br"])
+        amp = int(H * 0.03) + 10
+        y_bob = f"+{amp}*abs(sin(2.6*(t-{t0:.2f})))"
+        pos_expr = pos + y_bob
+        enable = f"between(t,{t0:.2f},{t1:.2f})"
+        g.parts.append(
+            f"[{sii}:v]scale=iw*0.26:-1,format=rgba[simg];")
+        g.parts.append(
+            f"[{g.cur}][simg]overlay={pos_expr}"
+            f":enable='{enable}'[subov]")
+        g.cur = "subov"
+
+    if plan.get("subs"):
+        g.step(f"ass={ff_filter_path(plan['subs'])}")
+
+    g.step("fade=t=out:st=%.2f:d=0.35" % max(0, dur - 0.4))
+    g.step("format=yuv420p")
+
+    # ---------------- audio ----------------
+    aparts: list[str] = []
+    labels = ["0:a"]
+    for i, ev in enumerate(sfx_events):
+        ms = int(max(0.0, ev["t"]) * 1000)
+        aparts.append(f"[{i + 1}:a]volume={ev.get('gain_db', 0)}dB,"
+                      f"adelay={ms}:all=1[e{i}]")
+        labels.append(f"[e{i}]")
+
+    base_a = "mix0"
+    if len(labels) > 1:
+        aparts.append("".join(labels) +
+                      f"amix=inputs={len(labels)}:normalize=0[mixraw];"
+                      f"[mixraw]alimiter=limit=0.95[{base_a}]")
+    else:
+        aparts.append(f"[0:a]anull[{base_a}]")
+
+    final_a = "aout"
+    if has_music:
+        mi = 1 + len(sfx_events)
+        mv = music.get("volume_db", -16.0)
+        aparts.append(f"[{mi}:a]volume={mv}dB,atrim=0:{dur:.2f},"
+                      f"afade=t=out:st={max(0, dur - 1.2):.2f}:d=1.2[mus]")
+        if music.get("duck"):
+            aparts.append(f"[{base_a}][mus]sidechaincompress="
+                          f"threshold=0.04:ratio=9:attack=8:release=420[ducked];"
+                          f"[ducked][mus]amix=inputs=2:normalize=0[finalm]")
+        else:
+            aparts.append(f"[{base_a}][mus]amix=inputs=2:normalize=0[finalm]")
+    else:
+        aparts.append(f"[{base_a}]anull[finalm]")
+    aparts.append(f"[finalm]loudnorm=I=-14:TP=-1.5:LRA=11[{final_a}]")
+
+    # ---------------- assemble ----------------
+    fc = ";".join(g.parts) + ";" + ";".join(aparts)
+    enc = pick_encoder(plan.get("encoder_mode", "auto"))
+    cmd = [resolve_bin("ffmpeg"), "-y", "-hide_banner"]
+    if nvidia and not enhance_applied:
+        cmd += ["-hwaccel", "cuda"]
+    cmd += ["-ss", f"{seek_start:.3f}", "-i", media,
+            "-t", f"{dur:.3f}"]
+    for ev in sfx_events:
+        cmd += ["-i", ev["file"]]
+    if has_music:
+        cmd += ["-stream_loop", "-1", "-i", music["file"]]
+    if has_wm:
+        cmd += ["-loop", "1", "-i", plan["watermark"]]
+    if has_sub:
+        cmd += ["-loop", "1", "-i", sub["file"]]
+    cmd += ["-filter_complex", fc,
+            "-map", f"[{g.cur}]", "-map", f"[{final_a}]",
+            *enc,
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", "-threads", "0",
+            plan["dest"]]
+    tags = []
+    if any("nvenc" in x for x in enc):
+        tags.append("nvenc")
+    if enhance_applied:
+        tags.append("ai-heavy")
+    elif plan.get("enhance"):
+        tags.append("ai-light")
+    reporter.log(f"FX render ({plan.get('look')}"
+                 + ("," + ",".join(tags) if tags else "") + ")"
+                 + (" +subscribe" if has_sub else "")
+                 + f" - {dur:.0f}s @ {W}x{H}{fps}")
+    _run_ffmpeg_progress(cmd, dur, reporter)
