@@ -22,6 +22,13 @@ GRADES = {
            "chromashift=rh=5:bh=-5,noise=alls=12:allf=t,gblur=sigma=0.6",
 }
 
+# "AI-crisp" enhancement chain: the same pipeline commercial enhancers run -
+# denoise compression artifacts -> contrast-adaptive sharpen (CAS) ->
+# gentle micro-contrast/saturation lift. Costs almost no render time.
+ENHANCE_CHAIN = ("hqdn3d=1.5:1.5:6:6,"
+                 "cas=strength=0.5,"
+                 "eq=saturation=1.05:contrast=1.02")
+
 
 class Graph:
     def __init__(self):
@@ -53,7 +60,6 @@ _SUB_POS = {
 
 
 def _run_ffmpeg_progress(cmd: list[str], dur: float, reporter):
-    """Runs ffmpeg while streaming 'render N%' lines into the console."""
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE)
     buf = b""
@@ -100,9 +106,8 @@ def render_clip(plan: dict, reporter) -> None:
     has_music = bool(music.get("file"))
     has_wm = bool(plan.get("watermark"))
     has_sub = bool(sub.get("file")) and os.path.isfile(sub["file"])
-    nvidia = False
     try:
-        nvidia = has_nvenc()      # proxy for "NVIDIA GPU present"
+        nvidia = has_nvenc()
     except Exception:
         nvidia = False
 
@@ -155,13 +160,16 @@ def render_clip(plan: dict, reporter) -> None:
             f":y='(ih-oh)/2+{amp * 0.6}*exp(-2.2*abs(t-{T}))*cos(33*t)'"
             f",scale={W}:{H}")
 
+    # ---------------- enhance (crisp) ----------------
+    if plan.get("enhance"):
+        g.step(ENHANCE_CHAIN)
+
     # ---------------- look ----------------
     grade = GRADES.get(plan.get("look", "none"), "")
     if grade:
         g.step(grade)
     if plan.get("bloom"):
-        # CHEAP BLOOM: blur at 1/4 resolution, then scale back up and screen-
-        # blend. Looks ~identical to full-res gaussian, roughly 10x faster.
+        # cheap bloom: quarter-res blur, scaled back up, screen-blended
         a = g.cur
         small_w = max(160, (W // 4) // 2 * 2)
         small_h = max(90, (H // 4) // 2 * 2)
@@ -209,7 +217,7 @@ def render_clip(plan: dict, reporter) -> None:
             f":enable='between(t,0.4,{dur:.2f})'[{nxt}]")
         g.cur = nxt
 
-    # ---- subscribe stamp (bobs up/down while visible) ----
+    # ---- subscribe stamp ----
     if has_sub:
         sii = 1 + len(sfx_events) + (1 if has_music else 0) \
             + (1 if has_wm else 0)
@@ -272,7 +280,6 @@ def render_clip(plan: dict, reporter) -> None:
     enc = pick_encoder(plan.get("encoder_mode", "auto"))
     cmd = [resolve_bin("ffmpeg"), "-y", "-hide_banner"]
     if nvidia:
-        # hardware-assisted DECODE: frees the CPU from demuxing/decoding work
         cmd += ["-hwaccel", "cuda"]
     cmd += ["-ss", f"{max(0.0, plan['start']):.3f}", "-i", plan["src"],
             "-t", f"{dur:.3f}"]
@@ -293,6 +300,7 @@ def render_clip(plan: dict, reporter) -> None:
     gpu_tag = " nvenc" if any("nvenc" in x for x in enc) else ""
     reporter.log(f"FX render ({plan.get('look')}{gpu_tag}"
                  + (", hw-decode" if nvidia else "")
+                 + (", enhanced" if plan.get("enhance") else "")
                  + ")" + (" +subscribe" if has_sub else "")
                  + f" - {dur:.0f}s @ {W}x{H}{fps}")
     _run_ffmpeg_progress(cmd, dur, reporter)
