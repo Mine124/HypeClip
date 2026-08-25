@@ -1,10 +1,12 @@
 from __future__ import annotations
 import os
+import re
+import subprocess
 
 from . import beats as beatmod
 from . import reframe
 from .utils import (esc_drawtext, ff_filter_path, pick_encoder, probe_dims,
-                    resolve_bin, run)
+                    resolve_bin)
 
 GRADES = {
     "none": "",
@@ -48,6 +50,43 @@ _SUB_POS = {
     "bl": "x=28:y=H-h-28",
     "br": "x=W-w-28:y=H-h-28",
 }
+
+
+def _run_ffmpeg_progress(cmd: list[str], dur: float, reporter):
+    """Runs ffmpeg while streaming 'render N%' lines into the console."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE)
+    buf = b""
+    last_pct = -1
+    try:
+        while True:
+            chunk = proc.stderr.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            parts = buf.split(b"\r")
+            buf = parts[-1]
+            for p in parts[:-1]:
+                m = re.search(rb"time=(\d+):(\d+):(\d+(?:\.\d+)?)", p)
+                if m and dur > 0:
+                    secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 \
+                        + float(m.group(3))
+                    pct = int(min(secs / dur, 1.0) * 100)
+                    if pct >= last_pct + 10 or (pct == 100 and last_pct < 100):
+                        last_pct = pct
+                        try:
+                            reporter.log(f"render {pct}%")
+                        except Exception:
+                            pass
+        rc = proc.wait()
+    finally:
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+    if rc != 0:
+        raise RuntimeError(f"FFmpeg render failed (exit code {rc}). "
+                           f"Try lowering quality/FPS or turning off Bloom.")
 
 
 def render_clip(plan: dict, reporter) -> None:
@@ -158,7 +197,7 @@ def render_clip(plan: dict, reporter) -> None:
             f":enable='between(t,0.4,{dur:.2f})'[{nxt}]")
         g.cur = nxt
 
-    # ---- cartoon subscribe stamp (bobs up/down while visible) ----
+    # ---- subscribe stamp (bobs up/down while visible) ----
     if has_sub:
         sii = 1 + len(sfx_events) + (1 if has_music else 0) \
             + (1 if has_wm else 0)
@@ -238,5 +277,6 @@ def render_clip(plan: dict, reporter) -> None:
             plan["dest"]]
     gpu_tag = " nvenc" if any("nvenc" in x for x in enc) else ""
     reporter.log(f"FX render ({plan.get('look')}{gpu_tag})"
-                 + (" +subscribe" if has_sub else ""))
-    run(cmd)
+                 + (" +subscribe" if has_sub else "")
+                 + f" - {dur:.0f}s @ {W}x{H}{fps}")
+    _run_ffmpeg_progress(cmd, dur, reporter)
