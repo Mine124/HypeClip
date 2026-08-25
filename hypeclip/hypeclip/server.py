@@ -1,5 +1,6 @@
 from __future__ import annotations
 import collections
+import glob
 import json
 import os
 import queue as _queue
@@ -15,10 +16,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import licensing as license_module
 from . import pipeline, updater
 from .branding import router as branding_router
 from .captionstyle import DEFAULTS, CaptionStyle
 from .config import APP_VERSION, DATA_DIR, RESOURCE_DIR, WEB_DIR, Settings
+from .editor import router as editor_router
+from .learn import router as learn_router
 from .utils import ff_filter_path, resolve_bin, run
 
 app = FastAPI(title="HypeClip Studio")
@@ -180,6 +184,7 @@ async def start_upload_job(options: str = Form("{}"),
 
 def _run(job: Job):
     job.state = "running"
+    job.s._licensed = license_module.is_licensed()
     try:
         if job.url and job.url.startswith("http"):
             try:
@@ -277,9 +282,9 @@ def get_export(export_id: str):
     ex = exports.get(export_id)
     if not ex:
         raise HTTPException(404)
-    return {"id": ex["id"], "state": ex["state"], "platform": ex["platform"],
-            "error": ex["error"], "result": ex["result"],
-            "logs": list(ex["logs"])}
+    return {"id": ex["id"], "state": ex["state"],
+            "platform": ex["platform"], "error": ex["error"],
+            "result": ex["result"], "logs": list(ex["logs"])}
 
 
 @app.post("/api/upload")
@@ -330,9 +335,45 @@ def meta():
     from .utils import has_nvenc
     return {"version": APP_VERSION, "out_dir": Settings().out_dir,
             "nvenc": has_nvenc(),
-            "manifest_configured": bool(updater.MANIFEST_URL)}
+            "manifest_configured": bool(updater.MANIFEST_URL),
+            "licensed": license_module.is_licensed(),
+            "tier": license_module.status().get("tier", "free")}
 
 
+# ------------------------- licensing -------------------------
+class LicenseReq(BaseModel):
+    key: str
+
+
+@app.post("/api/license/activate")
+def license_activate(req: LicenseReq):
+    ok, msg = license_module.activate(req.key)
+    return {"ok": ok, "message": msg, **license_module.status()}
+
+
+@app.get("/api/license/status")
+def license_status():
+    return license_module.status()
+
+
+@app.get("/api/download/logs")
+def download_logs():
+    import tempfile
+    import zipfile
+    zpath = os.path.join(tempfile.gettempdir(), "hypeclip_logs.zip")
+    srcs = []
+    for pat in ("*.log", "*.txt"):
+        srcs += glob.glob(os.path.join(DATA_DIR, pat))
+    with zipfile.ZipFile(zpath, "w") as z:
+        for s in sorted(set(srcs)):
+            try:
+                z.write(s, arcname=os.path.basename(s))
+            except OSError:
+                pass
+    return FileResponse(zpath, filename="hypeclip_logs.zip")
+
+
+# ------------------------- captions -------------------------
 @app.get("/api/caption/defaults")
 def caption_defaults():
     return DEFAULTS
@@ -350,7 +391,7 @@ def caption_preview(body: dict):
                {"w": "style", "s": 0.95, "e": 1.30},
                {"w": "goes", "s": 1.30, "e": 1.55},
                {"w": "absolutely", "s": 1.55, "e": 2.15},
-               {"w": "crazy", "s": 2.15, "e": 2.70},
+               {"w": "CRAZY!", "s": 2.15, "e": 2.70},
                {"w": "wow", "s": 2.90, "e": 3.40},
            ]}
     ass = os.path.join(Settings().work_dir, "_preview.ass")
@@ -405,6 +446,7 @@ def caption_delete(name: str):
     return {"ok": True}
 
 
+# --------------- updates / AI patch studio ---------------
 @app.get("/api/update/files")
 def update_files():
     return [{"path": p} for p in updater.module_list()]
@@ -516,6 +558,8 @@ def system_restart():
 
 
 app.include_router(branding_router)
+app.include_router(editor_router)
+app.include_router(learn_router)
 
 
 @app.get("/")
