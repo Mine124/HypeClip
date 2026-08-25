@@ -3,8 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.4.0"
-
+APP_VERSION = "3.5.0"
 
 def resource_dir() -> str:
     if getattr(sys, "frozen", False):
