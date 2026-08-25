@@ -140,6 +140,44 @@ def _zoom_expression(punch_t, fps, punch_amp, kicks, kick_amp):
 _SUB_POS = {"tl": "x=28:y=28", "tr": "x=W-w-28:y=28",
             "bl": "x=28:y=H-h-28", "br": "x=W-w-28:y=H-h-28"}
 
+# ------------------------------------------------------------------ ring
+_RING_RX = re.compile(r"([\d.]+)\s+overlay\s+([xy])\s+(-?\d+);")
+
+
+def _parse_ring_cmd(path):
+    """Director's cmd file: '{rel_t} overlay x {px};' / '... y {py};'
+    -> merged sorted [(rel_t, px, py)]."""
+    xs, ys = {}, {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for ln in f:
+                m = _RING_RX.match(ln.strip())
+                if not m:
+                    continue
+                t, ax, v = float(m.group(1)), m.group(2), int(m.group(3))
+                (xs if ax == "x" else ys)[t] = v
+    except OSError:
+        return []
+    ts = sorted(set(xs) | set(ys))
+    if len(ts) < 2:
+        return []
+    out = []
+    for t in ts:
+        kx = min((abs(t - k), k) for k in xs)[1] if xs else None
+        ky = min((abs(t - k), k) for k in ys)[1] if ys else None
+        out.append((t,
+                    xs[kx] if kx is not None else 0,
+                    ys[ky] if ky is not None else 0))
+    return out
+
+
+def _axis_expr(pts, idx):
+    """Nested if() ladder: piecewise-constant tracking path."""
+    expr = str(pts[-1][idx])
+    for p in reversed(pts[:-1]):
+        expr = f"if(lt(t,{p[0]:.2f}),{p[idx]},{expr})"
+    return expr
+
 
 def _run_ffmpeg_progress(cmd, dur, reporter):
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
@@ -184,6 +222,7 @@ def render_clip(plan, reporter) -> None:
     music = plan.get("music") or {}
     sfx_events = plan.get("sfx_events") or []
     sub = plan.get("subscribe") or {}
+    att = plan.get("attention") or {}
     has_music = bool(music.get("file"))
     has_wm = bool(plan.get("watermark"))
     has_sub = bool(sub.get("file")) and os.path.isfile(sub["file"])
@@ -208,10 +247,23 @@ def render_clip(plan, reporter) -> None:
         except Exception as e:  # noqa: BLE001
             reporter.log(f"heavy enhance failed ({e}) - continuing unenhanced")
 
-    # ---------------- layout (Eagle-Eye aware) ----------------
+    # ---------------- attention ring prep ----------------
     track_cmd = plan.get("track_cmd")
     has_track = bool(track_cmd) and os.path.isfile(track_cmd)
-    if plan["aspect"] != "16:9" or has_track:
+    att_pts = _parse_ring_cmd(att.get("cmd_file") or "") \
+        if att.get("cmd_file") else []
+    ring_png = att.get("ring_png") or ""
+    ring_ready = (bool(ring_png) and os.path.isfile(ring_png)
+                  and len(att_pts) >= 2 and bool(att.get("end")))
+    if att and not enhance_applied and ring_ready:
+        pass
+    elif att:
+        why = "heavy-enhance reframed the footage" if enhance_applied \
+            else "tracking data unavailable"
+        reporter.log(f"(attention ring skipped: {why})")
+
+    # ---------------- layout ----------------
+    if (plan["aspect"] != "16:9" or has_track) and not enhance_applied:
         src_w, src_h = probe_dims(media)
         ar = {"16:9": 16 / 9, "9:16": 9 / 16,
               "1:1": 1.0}.get(plan["aspect"], 16 / 9)
@@ -224,14 +276,16 @@ def render_clip(plan, reporter) -> None:
             cmd_file = plan.get("sendcmd")
             if cmd_file:
                 cw, ch = reframe.write_sendcmd(
-                    media, seek_start if not enhance_applied else 0.0, dur,
-                    src_w, src_h, plan["aspect"], cmd_file)
+                    media, seek_start, dur, src_w, src_h,
+                    plan["aspect"], cmd_file)
                 g.step(f"sendcmd=f={ff_filter_path(cmd_file)}")
                 g.step(f"crop={cw}:{ch}:x='(iw-ow)/2':y=(ih-oh)/2")
             else:
                 g.step(f"crop={cw}:{ch}:x='(iw-ow)/2':y=(ih-oh)/2")
         else:
             g.step(f"crop={cw}:{ch}:x='(iw-ow)/2':y=(ih-oh)/2")
+    elif enhance_applied:
+        reporter.log("(framing already baked in by AI enhance)")
 
     g.step(f"fps={fps}")
 
@@ -267,7 +321,7 @@ def render_clip(plan, reporter) -> None:
             f":y='(ih-oh)/2+{amp * 0.6}*exp(-2.2*abs(t-{T}))*cos(33*t)'"
             f",scale={W}:{H}")
 
-    # ---------------- light enhance / grade / bloom etc ----------------
+    # ---------------- light enhance / grade ----------------
     if plan.get("enhance") and plan.get("enhance_mode", "light") == "light":
         g.step(ENHANCE_LIGHT)
     grade = GRADES.get(plan.get("look", "none"), "")
@@ -333,6 +387,25 @@ def render_clip(plan, reporter) -> None:
             f":enable='between(t,{t0:.2f},{t1:.2f})'[subov]")
         g.cur = "subov"
 
+    # ---------------- attention ring (Director) ----------------
+    att_applied = False
+    ring_idx = 0
+    if ring_ready:
+        ring_idx = 1 + len(sfx_events) + (1 if has_music else 0) \
+            + (1 if has_wm else 0) + (1 if has_sub else 0)
+        xe = _axis_expr(att_pts, 1)
+        ye = _axis_expr(att_pts, 2)
+        size_frac = float(att.get("size_frac", 0.34))
+        g.parts.append(
+            f"[{ring_idx}:v]scale=iw*{size_frac:.3f}:-1,format=rgba[aring];")
+        g.parts.append(
+            f"[{g.cur}][aring]overlay="
+            f"x='{xe}':y='{ye}'"
+            f":enable='between(t,{float(att['appear']):.2f},"
+            f"{float(att['end']):.2f})'[attov]")
+        g.cur = "attov"
+        att_applied = True
+
     if plan.get("subs"):
         g.step(f"ass={ff_filter_path(plan['subs'])}")
 
@@ -384,6 +457,8 @@ def render_clip(plan, reporter) -> None:
         cmd += ["-loop", "1", "-i", plan["watermark"]]
     if has_sub:
         cmd += ["-loop", "1", "-i", sub["file"]]
+    if att_applied:
+        cmd += ["-loop", "1", "-i", ring_png]
     cmd += ["-filter_complex", fc,
             "-map", f"[{g.cur}]", "-map", f"[{final_a}]",
             *enc, "-c:a", "aac", "-b:a", "192k",
@@ -393,6 +468,8 @@ def render_clip(plan, reporter) -> None:
         tags.append("nvenc")
     if has_track:
         tags.append("eagle-eye")
+    if att_applied:
+        tags.append("directed")
     if enhance_applied:
         tags.append("ai-heavy")
     elif plan.get("enhance"):
