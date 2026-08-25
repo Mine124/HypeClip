@@ -3,7 +3,7 @@ scores it, and quarantines clips that fail the quality gate."""
 from __future__ import annotations
 import os
 import shutil
-
+import subprocess
 import numpy as np
 
 from .config import DATA_DIR
