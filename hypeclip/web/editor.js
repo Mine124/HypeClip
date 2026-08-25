@@ -92,3 +92,64 @@ $("#renderBtn").onclick=async()=>{
  }catch(err){btn.disabled=false;toast(String(err),"err");}
 };
 init();
+/* ======== ✂ Open-in-editor buttons + 🧠 Learner panel ======== */
+(function(){
+ /* edit buttons on every clip card */
+ const st=document.createElement("style");st.textContent=`
+ .lr-btn{position:fixed;left:20px;bottom:64px;z-index:45}
+ .lr-panel{position:fixed;left:20px;bottom:116px;z-index:46;width:340px;
+  background:#0d1019f5;border:1px solid rgba(255,255,255,.12);border-radius:16px;
+  padding:16px;display:none;box-shadow:0 24px 60px -12px #000d;
+  backdrop-filter:blur(14px);transform-origin:bottom left;
+  animation:menuIn .35s cubic-bezier(.34,1.56,.64,1)}
+ .lr-panel.open{display:block}
+ .lr-panel input{width:100%;background:#0b0d15;color:#fff;border:1px solid
+  rgba(255,255,255,.13);border-radius:9px;padding:9px 11px;outline:none;font-size:13px}`;
+ document.head.append(st);
+
+ function watch(gridId){
+  const g=document.getElementById(gridId);if(!g)return;
+  const deco=()=>g.querySelectorAll(".clip:not([data-edit])").forEach(card=>{
+   card.dataset.edit="1";
+   const btns=card.querySelector(".btns"),f=card.dataset.f;if(!btns||!f)return;
+   const b=document.createElement("button");b.className="icon-btn";
+   b.textContent="✂ edit";
+   b.onclick=()=>open(`/static/editor.html?file=${encodeURIComponent(f)}`,"_blank");
+   btns.prepend(b);});
+  deco();new MutationObserver(deco).observe(g,{childList:true});}
+ watch("clipsGrid");watch("wizClips");
+
+ /* learner panel */
+ const lb=document.createElement("button");lb.className="mini-btn lr-btn";
+ lb.textContent="🧠 Learner";document.body.append(lb);
+ const lp=document.createElement("div");lp.className="lr-panel";
+ lp.innerHTML=`<b style="font-size:13px">📈 Teach it what works</b>
+  <p class="hint">Post a clip, then paste its link here. After
+  <b>3+</b>, the AI retunes clip length &amp; hype-zone picks automatically.</p>
+  <div style="display:flex;gap:8px;margin-top:10px">
+  <input id="lrUrl" placeholder="https://tiktok.com/... or youtube.com/..."/>
+  <button class="mini-btn accent" id="lrAdd">Track</button></div>
+  <div id="lrOut" class="hint" style="margin-top:12px"></div>`;
+ document.body.append(lp);
+ lb.onclick=()=>lp.classList.toggle("open");
+
+ async function refreshLr(){
+  const ins=await(await fetch("/api/learn/insights")).json();
+  let html=ins.trained
+   ?`<b class="green">trained on ${ins.samples} clips</b><br/>
+     prefers ≈<b>${ins.best_len}s</b> · sweet spot ≈<b>${Math.round(ins.best_pos*100)}%</b> into streams`
+   :`${ins.message}<br/><span class="dim">${ins.samples}/${ins.need}</span>`;
+  $("#lrOut").innerHTML=html;}
+ refreshLr();
+
+ $("#lrAdd").onclick=async()=>{
+  const u=$("#lrUrl").value.trim();if(!u)return toast("paste the posted clip's link","err");
+  const r=await(await fetch("/api/learn/record",{method:"POST",
+   headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u})}));
+  const d=await r.json();
+  if(!r.ok)return toast(d.detail||"couldn't read that link","err");
+  $("#lrUrl").value="";
+  toast("tracked: "+(d.title||"clip").slice(0,40),"ok");
+  if(d.trained)toast(`🧠 learner updated — now prefers ${d.best_len}s @ ${Math.round(d.best_pos*100)}%`,"ok");
+  refreshLr();};
+})();
