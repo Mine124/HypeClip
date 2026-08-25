@@ -34,6 +34,7 @@ def run(url: str, settings: Settings, r: Reporter, stop: threading.Event | None 
     settings.ensure_dirs()
     sfx.ensure_defaults(settings.sfx_dir, r)
 
+    # ---- local upload path ----
     up = getattr(settings, "uploaded_file", "")
     if up and os.path.isfile(up):
         return _local_file(up, settings, r, stop)
@@ -65,6 +66,13 @@ def _analyze(analyzer, settings, r, total=None):
               f"{fmt_ts(m.start)} -> {fmt_ts(m.end)}")
         r.moment({"start": round(m.start, 1), "end": round(m.end, 1),
                   "peak": round(m.peak, 1), "score": round(m.score, 1)})
+
+    # ---- AI learner: retune selection from your posted-clip outcomes ----
+    try:
+        from .learn import apply_model
+        moments = apply_model(moments, total, r)
+    except Exception as e:  # noqa: BLE001
+        r.log(f"(learner idle: {e})")
     return moments
 
 
@@ -206,6 +214,7 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
 
 def _scan_and_render(media_path, dur, title, settings: Settings,
                      r: Reporter, stop):
+    """Wizard loop: select rect -> scan -> [review unless autopilot] -> render."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
