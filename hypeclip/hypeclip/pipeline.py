@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.parse
 
-from . import audiohype, beats, captions, decide, downloader, fx, sfx
+from . import audiohype, beats, captions, decide, downloader, editplan, fx, sfx
 from . import scan, sources, youtube
 from .captionstyle import CaptionStyle
 from .config import Settings
@@ -86,7 +86,7 @@ def _dims_for(aspect, src_h):
 def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     work, src = ctx["work"], ctx["media"]
 
-    # ================= HOOK PASS (before anything else) =================
+    # ================= HOOK PASS =================
     probe_wav = os.path.join(work, f"c{idx}_probe.wav")
     captions.slice_wav(src, start, dur, probe_wav)
     hook_delta, hook_why = 0.0, "n/a"
@@ -101,7 +101,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     if hook_delta >= 0.6:
         start += hook_delta
         dur -= hook_delta
-        captions.slice_wav(src, start, dur, probe_wav)   # re-slice
+        captions.slice_wav(src, start, dur, probe_wav)
         segs = [s for s in segs if s["end"] > hook_delta]
         for s in segs:
             s["start"] = max(0.0, s["start"] - hook_delta)
@@ -116,10 +116,8 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         r.log(f"🪝 hook kept as-is ({hook_why})")
 
     wav = os.path.join(work, f"c{idx}.wav")
-    if not os.path.isfile(wav) or probe_wav != wav:
-        shutil.copyfile(probe_wav, wav)
+    shutil.copyfile(probe_wav, wav)
 
-    # ---- captions ----
     subs_path = None
     caption_texts = ""
     if settings.autocaptions and segs:
@@ -143,10 +141,10 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                 built, mapping = decide.build_trimmed(
                     src, prep, start, dur, pauses)
                 if built:
-                    r.log(f"✂ removed {removal:.0f}s of dead air "
-                          f"({len(pauses)} pauses)")
+                    r.log(f"✂ removed {removable:.0f}s of dead air")
                     dur = mapping["new_dur"]
-                    src_for_render = built
+                    src = built
+                    start = 0.0
                     if segs:
                         for s in segs:
                             s["start"] = decide.remap(s["start"], mapping)
@@ -155,33 +153,29 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                                 for w in s["words"]:
                                     w["s"] = decide.remap(w["s"], mapping)
                                     w["e"] = decide.remap(w["e"], mapping)
-                    segs = [s for s in segs if s["end"] > 0.1]
-                    start = 0.0
-                    src = built
+                        segs = [s for s in segs if s["end"] > 0.1]
+                    shutil.copyfile(built, wav.replace(".wav", "_src.wav"))
         except Exception as e:  # noqa: BLE001
             r.log(f"(dead-air surgery skipped: {e})")
 
-    # ---- captions file (calm mode for emotional categories) ----
+    # ---- captions ----
     if settings.autocaptions and segs:
         cs = CaptionStyle.load_active()
         if pre_cat == "reaction":
             cs.d["effect"] = "fade"
+            cs.d["censor"] = False
             r.log("🧭 captions calmed (fade) - emotional tone")
         subs_path = os.path.join(work, f"c{idx}.ass")
         captions.write_ass(segs, subs_path, cs, *ctx["dims"])
 
-    # ---- SFX taste engine ----
-    events: list = []
-    if settings.sfx_enabled:
-        pool = sfx.list_sfx(settings.sfx_dir)
-        if pool:
-            try:
-                events, notes = decide.sfx_plan(wav, caption_texts,
-                                                settings, r, pool)
-                for nt in notes:
-                    r.log("🧭 " + nt)
-            except Exception as e:  # noqa: BLE001
-                r.log(f"(sfx engine fallback: {e})")
+    # ================= EDITPLAN (the brain) =================
+    plan_updates, dlog = editplan.build(
+        media_src=src, start=start, dur=dur, wav=wav,
+        segments=segs, settings=settings, r=r,
+        category=pre_cat, caption_texts=caption_texts,
+        ctx=ctx, idx=idx)
+    for line in dlog:
+        r.log(line)
 
     music = None
     if settings.music_file and os.path.isfile(settings.music_file):
@@ -202,22 +196,6 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     wm = settings.watermark_file if settings.watermark_file and \
         os.path.isfile(settings.watermark_file) else None
 
-    # ---- PACING DOCTRINE: per-category effect budget ----
-    doc = decide.pacing_plan(pre_cat, score)
-    r.log(f"🧭 pacing: {doc['note']}")
-    zoom_on = settings.zoom_punch and doc["zoom"]
-    do_punch, amp, zreason = decide.punch_decision(
-        pre_cat, int(_clamp(score, 0, 99)))
-    if do_punch and doc["zoom"]:
-        zoom_on = True
-        r.log(f"🧭 punch-in: {zreason} ({int(amp * 100)}%)")
-    shake_v = settings.shake if doc["shake"] else 0.0
-    flash_v = settings.flash_intro and doc["flash"]
-    bloom_v = settings.bloom and doc["bloom"]
-    grain_v = settings.grain and doc["grain"]
-    vig_v = settings.vignette and doc["vignette"]
-    beat_v = settings.beat_sync and doc["beat"]
-
     plan = {
         "src": src, "dest": os.path.join(work, f"c{idx}_fin.mp4"),
         "start": start, "dur": dur, "fps": settings.fps,
@@ -227,23 +205,17 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "W": ctx["dims"][0], "H": ctx["dims"][1],
         "enhance": bool(getattr(settings, "enhance", False)),
         "enhance_mode": getattr(settings, "enhance_mode", "light"),
-        "look": settings.fx_look, "bloom": bloom_v,
-        "grain": grain_v, "vignette": vig_v,
-        "zoom_punch": zoom_on, "zoom_strength": settings.zoom_strength,
-        "shake": shake_v,
-        "impact_t": min(settings.pre_roll, dur * 0.6),
-        "beat_sync": beat_v, "flash_intro": flash_v,
+        "look": settings.fx_look,
         "title": settings.title_text.replace("{score}", str(int(score))),
         "progress_bar": settings.progress_bar, "watermark": wm,
         "subscribe": sub,
-        "subs": subs_path, "sfx_events": events, "music": music,
-        "wav": wav,
+        "subs": subs_path, "music": music, "wav": wav,
     }
+    plan.update(plan_updates)          # sfx_events / zoom / doctrine flags
+
     trk = (ctx.get("tracks_by_index") or {}).get(idx)
-    if trk and not mapping:      # tracking timeline breaks after surgery
+    if trk and not mapping:
         plan["track_cmd"] = trk["cmd_file"]
-    elif trk and mapping:
-        r.log("(eagle-eye skipped on this clip: timeline was surgically edited)")
 
     fx.render_clip(plan, r)
 
@@ -282,12 +254,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         feats = decide.features_from_db(db, 0.0, dur, score, caption_texts)
         rt = decide.predict(feats)
         clip["retention"] = rt
-        issues = decide.critique(
-            feats, rt,
-            [k for k, on in (("zoom", zoom_on), ("shake", shake_v > 0),
-                             ("flash", flash_v), ("bloom", bloom_v),
-                             ("grain", grain_v)) if on],
-            pre_cat)
+        issues = decide.critique(feats, rt, [], pre_cat)
         if issues:
             r.log("🔍 critic: " + " · ".join(issues))
         r.log(f"📈 predicted: watch {rt['avg_watch_pct']}% · "
@@ -326,22 +293,21 @@ def _vod(url, info, plat, settings, r, stop):
     work = os.path.join(settings.work_dir, key)
     os.makedirs(work, exist_ok=True)
     if os.getenv("HYPECLIP_FULL_DOWNLOAD") == "1":
-        r.log("full-download mode")
         path, _ = downloader.download_vod(
             url, work, settings, r,
             progress_cb=lambda f: r.progress(0.02 + 0.43 * (f or 0)))
         dur = probe_duration(path)
         r.media_ready(key, os.path.basename(path), dur)
-        return _scan_and_render(path, dur, info["title"],
-                                settings, r, stop, url=None)
+        return _scan_and_render(path, dur, info["title"], settings, r,
+                                stop, url=None)
     r.log("fast pass: lightweight preview first - HD fetched per-clip")
     path, _ = downloader.download_proxy(
         url, work, settings, r,
         progress_cb=lambda f: r.progress(0.02 + 0.38 * (f or 0)))
     dur = probe_duration(path)
     r.media_ready(key, os.path.basename(path), dur)
-    return _scan_and_render(path, dur, info["title"],
-                            settings, r, stop, url=url)
+    return _scan_and_render(path, dur, info["title"], settings, r,
+                            stop, url=url)
 
 
 def _scan_and_render(media_path, dur, title, settings, r, stop,
@@ -378,13 +344,13 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
 
         try:
             from . import intel
-            db = intel.audio_db(media_path)
+            dbx = intel.audio_db(media_path)
             for m in moments[:int(settings.max_clips)]:
-                fa = decide.features_from_db(db, m.start, m.end - m.start,
-                                             m.score)
+                fa = decide.features_from_db(dbx, m.start,
+                                             m.end - m.start, m.score)
                 alt_end = m.end - min(6.0, (m.end - m.start) * 0.18)
                 if alt_end - m.start > 15:
-                    fb = decide.features_from_db(db, m.start,
+                    fb = decide.features_from_db(dbx, m.start,
                                                  alt_end - m.start, m.score)
                     if decide.predict(fb)["score"] > \
                             decide.predict(fa)["score"] + 2:
