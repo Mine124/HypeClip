@@ -11,7 +11,7 @@ if (!$SkipDeps) {
   & $py -m pip install -U pip wheel | Out-Null
   & $py -m pip install -r requirements.txt -r packaging\requirements-build.txt
 
-  # ---- FFmpeg: try multiple mirrors, survive total failure ----
+  # ---- FFmpeg: try several mirrors; survive total failure ----
   New-Item -ItemType Directory -Force bin | Out-Null
   if (!(Test-Path bin\ffmpeg.exe)) {
     $zip = "$env:TEMP\ffmpeg_hypeclip.zip"
@@ -19,8 +19,8 @@ if (!$SkipDeps) {
     $mirrors = @(
       "https://github.com/GyanD/codexffmpeg/releases/latest/download/ffmpeg-release-essentials.zip",
       "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-      "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
-      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+      "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-win32-x64"
     )
     $got = $false
     foreach ($u in $mirrors) {
@@ -29,25 +29,24 @@ if (!$SkipDeps) {
         Invoke-WebRequest $u -OutFile $zip -MaximumRedirection 10 `
           -UserAgent "Mozilla/5.0"
         if ((Get-Item $zip).Length -gt 30MB) { $got = $true; break }
-        Write-Warning "file too small, trying next mirror..."
+        Write-Warning "file too small - trying next mirror..."
       } catch {
         Write-Warning "mirror failed: $u"
       }
     }
     if ($got) {
       Expand-Archive $zip $tmpd -Force
-      $bins = Get-ChildItem -Path $tmpd -Recurse -Include ffmpeg.exe,ffprobe.exe |
-              Select-Object -ExpandProperty FullName
-      foreach ($b in $bins) { Copy-Item $b bin\ -Force }
+      Get-ChildItem -Path $tmpd -Recurse -Include ffmpeg.exe,ffprobe.exe |
+        ForEach-Object { Copy-Item $_.FullName bin\ -Force }
       Remove-Item $zip,$tmpd -Recurse -Force -ErrorAction SilentlyContinue
       if (Test-Path bin\ffmpeg.exe) {
         Write-Host "bin\ffmpeg.exe ready" -ForegroundColor Green
       } else {
-        Write-Warning "downloaded but exe not found - continuing without bundle"
+        Write-Warning "downloaded but exes not found - continuing without bundle"
       }
     } else {
-      Write-Warning "All FFmpeg mirrors failed - building WITHOUT bundled ffmpeg."
-      Write-Warning "(The app self-downloads FFmpeg into Data\bin on first run.)"
+      Write-Warning "ALL FFmpeg mirrors failed - building WITHOUT bundled ffmpeg."
+      Write-Warning "(App self-downloads FFmpeg into Data\bin on first run.)"
     }
   }
 
