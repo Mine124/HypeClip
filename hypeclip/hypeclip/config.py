@@ -3,7 +3,8 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.6.0"
+
 
 def resource_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -48,12 +49,12 @@ class Settings:
     fps: int = 60
     gpu: str = "auto"
     workers: int = 2
-    # --- look ---
+    # --- look (all OFF - clean output) ---
     fx_look: str = "none"
     bloom: bool = False
     grain: bool = False
     vignette: bool = False
-    # --- motion ---
+    # --- motion (all OFF) ---
     zoom_punch: bool = False
     zoom_strength: float = 0.55
     shake: float = 0.0
@@ -80,6 +81,8 @@ class Settings:
     sub_dur: float = 4.0
     # --- scanner ---
     scan_fps: int = 6
+    # --- eagle-eye tracking ---
+    track_enabled: bool = False          # set per-job from wizard, kept for defaults
     # --- local upload ---
     uploaded_file: str = ""
     # --- io ---
