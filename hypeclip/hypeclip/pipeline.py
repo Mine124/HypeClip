@@ -34,7 +34,6 @@ def run(url: str, settings: Settings, r: Reporter, stop: threading.Event | None 
     settings.ensure_dirs()
     sfx.ensure_defaults(settings.sfx_dir, r)
 
-    # ---- local upload path: skip link resolution & download entirely ----
     up = getattr(settings, "uploaded_file", "")
     if up and os.path.isfile(up):
         return _local_file(up, settings, r, stop)
@@ -175,7 +174,6 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
 
 def _local_file(path: str, settings: Settings, r: Reporter,
                 stop: threading.Event | None):
-    """User-uploaded video: no link, no download - go straight to wizard."""
     r.stage("resolve")
     title = os.path.splitext(os.path.basename(path))[0]
     r.log(f"local file: {title}  [{fmt_ts(probe_duration(path))}]")
@@ -206,7 +204,8 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
 
 def _scan_and_render(media_path, dur, title, settings: Settings,
                      r: Reporter, stop):
-    """Shared wizard loop: select rect -> scan -> review -> render."""
+    """Wizard loop: select rect -> scan -> [review] -> render.
+    With auto_render on, the review wait is skipped entirely."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
@@ -233,6 +232,11 @@ def _scan_and_render(media_path, dur, title, settings: Settings,
                    "peak": round(m.peak, 1), "score": round(m.score, 1)}
                   for m in moments],
                  getattr(r, "last_series", None))
+
+        if getattr(settings, "auto_render", False):
+            r.log("autopilot: peaks locked in - rendering now, "
+                  "no babysitting required")
+            break
 
         cmd = r.wait_command()
         if cmd[0] == "rescan":
@@ -354,4 +358,3 @@ def _live(url, info, settings: Settings, r: Reporter, stop):
     r.stage("done")
     r.progress(1.0)
     return clips
-    
