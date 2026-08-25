@@ -5,15 +5,13 @@ import subprocess
 
 from . import beats as beatmod
 from . import reframe
-from .utils import (esc_drawtext, ff_filter_path, pick_encoder, probe_dims,
-                    resolve_bin)
+from .utils import (esc_drawtext, ff_filter_path, has_nvenc, pick_encoder,
+                    probe_dims, resolve_bin)
 
 GRADES = {
     "none": "",
     "capcut": "eq=saturation=1.22:contrast=1.06:brightness=0.01,"
               "unsharp=5:5:0.6:5:5:0.0",
-    # NOTE: literal colons inside curves points MUST be escaped (\:) -
-    # otherwise ffmpeg parses them as new option names.
     "cinematic": "curves=r='0/0.02 0.5/0.53 1/0.99'"
                  ":g='0/0.01 0.5/0.5 1/0.99'"
                  ":b='0/0.05 0.5/0.48 1/0.95',"
@@ -102,6 +100,11 @@ def render_clip(plan: dict, reporter) -> None:
     has_music = bool(music.get("file"))
     has_wm = bool(plan.get("watermark"))
     has_sub = bool(sub.get("file")) and os.path.isfile(sub["file"])
+    nvidia = False
+    try:
+        nvidia = has_nvenc()      # proxy for "NVIDIA GPU present"
+    except Exception:
+        nvidia = False
 
     # ---------------- layout ----------------
     if plan["aspect"] != "16:9":
@@ -157,12 +160,19 @@ def render_clip(plan: dict, reporter) -> None:
     if grade:
         g.step(grade)
     if plan.get("bloom"):
-        sigma = max(8.0, H / 70.0)
+        # CHEAP BLOOM: blur at 1/4 resolution, then scale back up and screen-
+        # blend. Looks ~identical to full-res gaussian, roughly 10x faster.
         a = g.cur
-        b, c = f"{a}_b", f"{a}_blur"
+        small_w = max(160, (W // 4) // 2 * 2)
+        small_h = max(90, (H // 4) // 2 * 2)
+        sigma_small = max(2.0, H / 280.0)
+        b = f"{a}_sm"
+        c = f"{a}_blur"
         opacity = 0.28 + (0.10 if plan.get("look") == "vhs" else 0.0)
         g.parts.append(
-            f"[{a}]split[{a}_o][{b}];[{b}]gblur=sigma={sigma}[{c}];"
+            f"[{a}]split[{a}_o][{b}_raw];"
+            f"[{b}_raw]scale={small_w}:{small_h},gblur=sigma={sigma_small},"
+            f"scale={W}:{H}[{c}];"
             f"[{a}_o][{c}]blend=all_mode=screen:all_opacity={opacity}"
             f"[{a}_bl]")
         g.cur = f"{a}_bl"
@@ -260,9 +270,12 @@ def render_clip(plan: dict, reporter) -> None:
     # ---------------- assemble ----------------
     fc = ";".join(g.parts) + ";" + ";".join(aparts)
     enc = pick_encoder(plan.get("encoder_mode", "auto"))
-    cmd = [resolve_bin("ffmpeg"), "-y", "-hide_banner",
-           "-ss", f"{max(0.0, plan['start']):.3f}", "-i", plan["src"],
-           "-t", f"{dur:.3f}"]
+    cmd = [resolve_bin("ffmpeg"), "-y", "-hide_banner"]
+    if nvidia:
+        # hardware-assisted DECODE: frees the CPU from demuxing/decoding work
+        cmd += ["-hwaccel", "cuda"]
+    cmd += ["-ss", f"{max(0.0, plan['start']):.3f}", "-i", plan["src"],
+            "-t", f"{dur:.3f}"]
     for ev in sfx_events:
         cmd += ["-i", ev["file"]]
     if has_music:
@@ -278,7 +291,8 @@ def render_clip(plan: dict, reporter) -> None:
             "-movflags", "+faststart", "-threads", "0",
             plan["dest"]]
     gpu_tag = " nvenc" if any("nvenc" in x for x in enc) else ""
-    reporter.log(f"FX render ({plan.get('look')}{gpu_tag})"
-                 + (" +subscribe" if has_sub else "")
+    reporter.log(f"FX render ({plan.get('look')}{gpu_tag}"
+                 + (", hw-decode" if nvidia else "")
+                 + ")" + (" +subscribe" if has_sub else "")
                  + f" - {dur:.0f}s @ {W}x{H}{fps}")
     _run_ffmpeg_progress(cmd, dur, reporter)
