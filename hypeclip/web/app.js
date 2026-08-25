@@ -538,3 +538,23 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  const _open=openWizard;
  openWizard=function(){_open();if(typeof wizStep==="number")setStep(wizStep);};
 })();
+/* ======== ✨ Aura polish: ripples ======== */
+(function(){
+ if(matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+ const st=document.createElement("style");st.textContent=`
+ .ripple{position:absolute;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,#ffffff55,transparent 65%);
+  transform:scale(0);animation:rip .55s var(--e-out,cubic-bezier(.22,1,.36,1)) forwards}
+ @keyframes rip{to{transform:scale(3.2);opacity:0}}`;
+ document.head.append(st);
+ document.addEventListener("pointerdown",e=>{
+  const b=e.target.closest(".cta,.mini-btn,.ghost-btn,.exp-chip");
+  if(!b||getComputedStyle(b).position==="")b.style.position="relative";
+  b.style.overflow="hidden";b.style.position=b.style.position||"relative";
+  const r=b.getBoundingClientRect(),d=Math.max(r.width,r.height);
+  const s=document.createElement("span");s.className="ripple";
+  s.style.width=s.style.height=d+"px";
+  s.style.left=(e.clientX-r.left-d/2)+"px";s.style.top=(e.clientY-r.top-d/2)+"px";
+  b.append(s);setTimeout(()=>s.remove(),600);
+ });
+})();
