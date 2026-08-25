@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, fields
 
-APP_VERSION = "3.2.4"
+APP_VERSION = "3.2.5"
 
 
 def resource_dir() -> str:
@@ -37,6 +37,8 @@ class Settings:
     pre_roll: float = 8.0
     hype_threshold: float = 3.0
     cooldown: float = 90.0
+    # --- autopilot ---
+    auto_render: bool = True
     # --- layout / perf ---
     aspect: str = "9:16"
     smart_reframe: bool = True
@@ -44,17 +46,17 @@ class Settings:
     fps: int = 60
     gpu: str = "auto"
     workers: int = 2
-    # --- look ---
-    fx_look: str = "capcut"
-    bloom: bool = True
+    # --- look (all OFF by default - clean output, fastest renders) ---
+    fx_look: str = "none"
+    bloom: bool = False
     grain: bool = False
     vignette: bool = False
-    # --- motion ---
-    zoom_punch: bool = True
+    # --- motion (all OFF by default) ---
+    zoom_punch: bool = False
     zoom_strength: float = 0.55
-    shake: float = 0.35
-    beat_sync: bool = True
-    flash_intro: bool = True
+    shake: float = 0.0
+    beat_sync: bool = False
+    flash_intro: bool = False
     # --- overlays ---
     title_text: str = ""
     progress_bar: bool = False
