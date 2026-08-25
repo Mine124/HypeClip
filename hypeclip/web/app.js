@@ -20,7 +20,8 @@ function opts(){return{
  beat_sync:$("#optBeat").checked,flash_intro:$("#optFlash").checked,
  bloom:$("#optBloom").checked,grain:$("#optGrain").checked,
  vignette:$("#optVig").checked,fx_look:$("#optLook").value,
- auto_render:$("#optAuto")?$("#optAuto").checked:true};}
+ auto_render:$("#optAuto")?$("#optAuto").checked:true,
+ enhance:false,enhance_mode:"light"};}
 
 function toast(msg,cls=""){const t=document.createElement("div");
  t.className="toast "+cls;t.textContent=msg;$("#toasts").append(t);
@@ -33,12 +34,14 @@ $("#folderBtn").onclick=()=>fetch("/api/meta").then(r=>r.json()).then(m=>
  fetch("/api/reveal",{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify({path:m.out_dir})}));
 
-/* ---------- wizard show/hide ---------- */
+/* ---------- wizard show/hide (view-only) ---------- */
 function openWizard(){$("#wiz").classList.remove("hidden");}
 function closeWizard(){$("#wiz").classList.add("hidden");}
 $("#wizClose").onclick=closeWizard;
 $("#wiz").addEventListener("mousedown",e=>{
  if(e.target.id==="wiz")closeWizard();});
+
+/* REOPEN BUTTON - always available, never starts a job */
 (function(){
  const b=document.createElement("button");
  b.className="ghost-btn";b.id="wizToggleBtn";b.textContent="🎛 Wizard";
@@ -149,7 +152,6 @@ timer=setInterval(async()=>{
    $("#btnScan").dataset.scanning="0";}
  updateScanBtn();
 
- /* autopilot: jump straight to step 4 when render begins */
  if(st==="clip"&&wizStep<4)setStep(4);
  if(st==="review")renderPeaks(j);
 
@@ -192,7 +194,6 @@ function addClip(c,sel){
  grid.prepend(el);}
 
 /* ---------- shared option gathering ---------- */
-function gatherOptions(){return opts();}
 function attachBranding(base){
  try{
   const on=document.getElementById("bkOn");
@@ -215,10 +216,17 @@ async function start(){
  if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
  const url=$("#urlInput").value.trim();
  if(!url)return toast("paste a link first","err");
- const payload=await attachBranding(gatherOptions());
+ const base=opts();
+ try{
+  const on=document.getElementById("bkOn");
+  if(on&&on.checked&&document.getElementById("bkPos")){
+   const st=await(await fetch("/api/streamers")).json();
+   if(st.active){base.sub_name=st.active;base.sub_pos=$("#bkPos").value;
+    base.sub_when=$("#bkWhen").value;base.sub_dur=+$("#bkDur").value;}}
+ }catch(e){}
  const res=await fetch("/api/jobs",{method:"POST",
   headers:{"Content-Type":"application/json"},
-  body:JSON.stringify({url,options:payload})});
+  body:JSON.stringify({url,options:base})});
  if(!res.ok)return toast("failed to start","err");
  beginJob((await res.json()).job_id);}
 $("#goBtn").onclick=start;
@@ -239,7 +247,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   if(activeJob){toast("a job is already running — wait or Stop it first","err");return;}
   toast("uploading "+f.name+" …");
   const fd=new FormData();
-  fd.append("options",JSON.stringify(await attachBranding(gatherOptions())));
+  fd.append("options",JSON.stringify(opts()));
   fd.append("file",f);
   try{
    const res=await fetch("/api/jobs/upload",{method:"POST",body:fd});
@@ -251,7 +259,61 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  }
 })();
 
-/* ======== Brand Kit + scan-fps ======== */
+/* ======== ✨ AI Enhance v2 (light / heavy) ======== */
+(function(){
+ /* remove the old single-tick control if it exists */
+ const old=document.getElementById("optEnh");
+ if(old&&old.closest("label"))old.closest("label").remove();
+
+ const grid=document.querySelector(".hero details .grid");
+ if(grid&&!document.getElementById("optEnh")){
+  const lab=document.createElement("label");
+  lab.className="sw";
+  lab.innerHTML='<input type="checkbox" id="optEnh"/><i></i>✨ AI Enhance';
+  grid.append(lab);
+  const modes=document.createElement("label");
+  modes.id="enhModes";
+  modes.style.display="none";
+  modes.innerHTML='<span style="font-size:11px">Mode</span>'+
+   '<select id="optEnhMode">'+
+   '<option value="light">Light — instant · subtle crisp</option>'+
+   '<option value="heavy">Heavy — neural upscale · ultra-crisp (very slow)</option>'+
+   '</select>';
+  grid.append(modes);
+  lab.querySelector("input").addEventListener("change",e=>{
+   modes.style.display=e.target.checked?"flex":"none";});
+ }
+
+ /* patch opts() so enhance settings ride along on every job submission */
+ const _origOpts=opts;
+ opts=function(){
+  const base=_origOpts();
+  const el=document.getElementById("optEnh");
+  const md=document.getElementById("optEnhMode");
+  base.enhance=el?el.checked:false;
+  base.enhance_mode=md?md.value:"light";
+  return base;
+ };
+})();
+
+/* ======== Scan precision slider ======== */
+(function(){
+ try{
+  const grid=document.querySelector(".hero details .grid");
+  if(grid&&!document.getElementById("optScanFps")){
+   const lab=document.createElement("label");
+   lab.innerHTML='<span>Scan precision <b class="val">'+
+    '<output id="sfpsOut">6</output> fps</b></span>'+
+    '<input id="optScanFps" type="range" min="2" max="30" value="6"/>';
+   grid.append(lab);
+   const el=lab.querySelector("input");
+   const setF=()=>{$("#sfpsOut").textContent=el.value;
+    el.style.setProperty("--fill",((el.value-2)/28*100)+"%");};
+   el.addEventListener("input",setF);setF();
+  }}catch(e){}
+})();
+
+/* ======== Brand Kit ======== */
 (function(){
  const css=document.createElement("style");css.textContent=`
  .bk-btn{position:fixed;left:20px;bottom:20px;z-index:45;}
@@ -323,20 +385,6 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
   $("#bkPrev").src="/api/streamers/preview.png?name="+encodeURIComponent(n)
    +"&style="+$("#bkStyle").value+"&t="+Date.now();});
  refreshBk();
-
- try{
-  const grid=document.querySelector(".hero details .grid");
-  if(grid&&!document.getElementById("optScanFps")){
-   const lab=document.createElement("label");
-   lab.innerHTML='<span>Scan precision <b class="val">'+
-    '<output id="sfpsOut">6</output> fps</b></span>'+
-    '<input id="optScanFps" type="range" min="2" max="30" value="6"/>';
-   grid.append(lab);
-   const el=lab.querySelector("input");
-   const setF=()=>{$("#sfpsOut").textContent=el.value;
-    el.style.setProperty("--fill",((el.value-2)/28*100)+"%");};
-   el.addEventListener("input",setF);setF();
-  }}catch(e){}
 })();
 
 /* ======== Export menu ======== */
@@ -420,7 +468,7 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
  watchGrid("clipsGrid");watchGrid("wizClips");
 })();
 
-/* ======== Back / Next navigation ======== */
+/* ======== Back / Next navigation (view-only, gated) ======== */
 (function(){
  const st=document.createElement("style");st.textContent=`
  .wiz-nav{display:flex;align-items:center;gap:10px;margin-top:18px;
@@ -489,23 +537,4 @@ addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")start();});
 
  const _open=openWizard;
  openWizard=function(){_open();if(typeof wizStep==="number")setStep(wizStep);};
-})();
-/* ======== ✨ Enhance (crisp) tick ======== */
-(function(){
- try{
-  const grid=document.querySelector(".hero details .grid");
-  if(grid&&!document.getElementById("optEnh")){
-   const lab=document.createElement("label");
-   lab.className="sw";
-   lab.innerHTML='<input type="checkbox" id="optEnh" checked/><i></i>✨ Enhance (crisp)';
-   grid.append(lab);
-  }
- }catch(e){}
- const _origOpts=opts;
- opts=function(){
-  const base=_origOpts();
-  const el=document.getElementById("optEnh");
-  base.enhance=el?el.checked:true;
-  return base;
- };
 })();
