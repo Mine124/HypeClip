@@ -10,7 +10,7 @@ import numpy as np
 
 from .config import DATA_DIR
 from .intel import audio_db
-
+from .utils import run
 OUTCOMES = os.path.join(DATA_DIR, "outcomes.json")
 
 # doctrine: 'intensity' is the master dial (0-1) scaling every effect
