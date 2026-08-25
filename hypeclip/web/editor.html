@@ -1,0 +1,100 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>HypeClip · Editor</title>
+<link rel="stylesheet" href="/static/styles.css"/>
+<style>
+.wrap{max-width:1180px;margin:0 auto;padding:24px 22px 90px}
+.editgrid{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;align-items:start}
+@media(max-width:960px){.editgrid{grid-template-columns:1fr}}
+.preview video{width:100%;aspect-ratio:16/9;background:#000;border-radius:14px;
+ display:block;box-shadow:var(--sh-card)}
+.tline{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.ectl{background:linear-gradient(180deg,#12151fcc,#0d1017dd);border:1px solid var(--line);
+ border-radius:var(--r-lg);padding:20px;margin-bottom:18px}
+.slider label{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim)}
+.big{font-size:15px;font-weight:800;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+textarea.txt{margin-top:6px}
+.result video{width:100%;border-radius:12px;margin-top:8px}
+.backlink{color:var(--dim);font-size:13px;text-decoration:none}
+.backlink:hover{color:#fff}
+</style></head><body>
+<div class="bg-mesh"></div>
+<header class="topbar">
+ <div class="logo">✂️ <span>Edit<b>Desk</b></span><em>HYPECLIP</em></div>
+ <div class="head-right"><a class="ghost-btn backlink" href="/">← back to Studio</a></div>
+</header>
+<div class="wrap">
+ <div class="card hero" style="padding:18px">
+  <div class="big">🎞 Editing: <span id="clipName" class="green"></span></div>
+ </div>
+ <div class="editgrid">
+  <section class="card">
+   <div class="preview"><video id="pv" controls playsinline></video></div>
+   <div class="tline">
+    <button class="mini-btn" id="setIn">Set In ⬅</button>
+    <button class="mini-btn" id="setOut">Set Out ➡</button>
+    <button class="mini-btn" id="playSel">▶ Preview selection</button>
+    <span class="dim" id="selInfo"></span>
+   </div>
+   <div class="row"><span class="flex1"></span>
+    <button id="renderBtn" class="cta sm">💾 Render edited clip 🎬</button></div>
+   <p class="hint" id="statusLine">tweak the controls, then render.</p>
+   <div class="result hidden" id="resultBox">
+    <h3>Your edited clip</h3>
+    <video id="resultVid" controls playsinline></video>
+    <a class="mini-btn accent" id="dlBtn" download>⬇ Download</a>
+   </div>
+  </section>
+  <section>
+   <div class="ectl">
+    <div class="big">✂️ Trim &amp; Speed</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+     <label>In (s)<input id="t0" type="number" value="0" min="0" step="0.1"/></label>
+     <label>Out (s)<input id="t1" type="number" min="0" step="0.1"/></label>
+    </div>
+    <div class="slider" style="margin-top:10px"><label>Speed
+     <b class="val" id="spdOut">1.0×</b></label>
+     <input id="speed" type="range" min="0.5" max="2" step="0.05" value="1"/></div>
+   </div>
+   <div class="ectl">
+    <div class="big">🎨 Look</div>
+    <div class="slider"><label>Brightness <b class="val" id="bOut">0.00</b></label>
+     <input id="bright" type="range" min="-0.3" max="0.3" step="0.01" value="0"/></div>
+    <div class="slider" style="margin-top:10px"><label>Contrast <b class="val" id="cOut">1.00</b></label>
+     <input id="contrast" type="range" min="0.6" max="1.6" step="0.01" value="1"/></div>
+    <div class="slider" style="margin-top:10px"><label>Saturation <b class="val" id="sOut">1.00</b></label>
+     <input id="sat" type="range" min="0" max="2" step="0.01" value="1"/></div>
+    <div class="grid" style="margin-top:12px">
+     <label>Aspect<select id="aspect">
+      <option value="original">Original</option><option value="9:16">9:16</option>
+      <option value="16:9">16:9</option><option value="1:1">1:1</option></select></label>
+     <label class="sw" style="align-self:end"><input id="enhance" type="checkbox"/><i></i>✨ Crisp</label>
+    </div>
+   </div>
+   <div class="ectl">
+    <div class="big">🔤 Text overlays (up to 2)</div>
+    <div class="grid" style="grid-template-columns:1fr 84px 84px">
+     <label>Text 1<input class="txt" id="txt1" placeholder="e.g. WAIT FOR IT 😱"/></label>
+     <label>Y %<input id="y1" type="number" value="85" min="2" max="96"/></label>
+     <label>Show until<input id="tt1" type="number" value="3" step="0.5"/></label>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 84px 84px;margin-top:10px">
+     <label>Text 2<input class="txt" id="txt2" placeholder="(optional)"/></label>
+     <label>Y %<input id="y2" type="number" value="15" min="2" max="96"/></label>
+     <label>Show until<input id="tt2" type="number" value="3" step="0.5"/></label>
+    </div>
+   </div>
+   <div class="ectl">
+    <div class="big">🔊 Audio &amp; Fades</div>
+    <div class="grid">
+     <label class="sw"><input id="mute" type="checkbox"/><i></i>Mute audio</label>
+     <label>Volume dB<input id="vol" type="number" value="0" step="1"/></label>
+     <label>Fade in (s)<input id="fin" type="number" value="0" min="0" step="0.1"/></label>
+     <label>Fade out (s)<input id="fout" type="number" value="0.4" min="0" step="0.1"/></label>
+    </div>
+   </div>
+  </section>
+ </div>
+</div>
+<div id="toasts"></div>
+<script src="/static/editor.js"></script></body></html>
