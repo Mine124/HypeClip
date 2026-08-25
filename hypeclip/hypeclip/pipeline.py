@@ -34,7 +34,6 @@ def run(url: str, settings: Settings, r: Reporter, stop: threading.Event | None 
     settings.ensure_dirs()
     sfx.ensure_defaults(settings.sfx_dir, r)
 
-    # ---- local upload path ----
     up = getattr(settings, "uploaded_file", "")
     if up and os.path.isfile(up):
         return _local_file(up, settings, r, stop)
@@ -62,12 +61,9 @@ def _analyze(analyzer, settings, r, total=None):
         raise RuntimeError("No hype found - try lower sensitivity, or redraw "
                            "the rectangle exactly over the moving chat.")
     for m in moments:
-        r.log(f"HYPE @ {fmt_ts(m.peak)}  score={m.score:.1f}  "
-              f"{fmt_ts(m.start)} -> {fmt_ts(m.end)}")
+        r.log(f"HYPE @ {fmt_ts(m.peak)}  score={m.score:.1f}")
         r.moment({"start": round(m.start, 1), "end": round(m.end, 1),
                   "peak": round(m.peak, 1), "score": round(m.score, 1)})
-
-    # ---- AI learner: retune selection from your posted-clip outcomes ----
     try:
         from .learn import apply_model
         moments = apply_model(moments, total, r)
@@ -90,9 +86,11 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     captions.slice_wav(src, start, dur, wav)
 
     subs_path = None
+    caption_texts = ""
     if settings.autocaptions:
         segs = captions.transcribe_audio(wav, settings, r)
         if segs:
+            caption_texts = " ".join(s.get("text", "") for s in segs)
             cs = CaptionStyle.load_active()
             subs_path = os.path.join(work, f"c{idx}.ass")
             captions.write_ass(segs, subs_path, cs, *ctx["dims"])
@@ -173,10 +171,31 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                             f"{safe_name(title)}_{idx + 1:02d}_{int(start)}s-{n}.mp4")
         n += 1
     shutil.move(plan["dest"], dest)
+
     clip = {"file": os.path.basename(dest),
             "url": "/clips/" + urllib.parse.quote(os.path.basename(dest)),
             "duration": round(probe_duration(dest), 1),
             "score": round(score, 1), "start": round(start, 1)}
+
+    # ---- intelligence pass: category, viral score, metadata, thumbnails ----
+    try:
+        from . import intel
+        stem = os.path.splitext(os.path.basename(dest))[0]
+        info_i = intel.finalize(
+            wav=wav, texts=caption_texts, src_title=title,
+            peak_score=score, start=start, dur=dur,
+            video=dest, impact_t=min(plan["impact_t"], dur - 0.5),
+            out_dir=settings.out_dir, stem=stem)
+        clip.update(info_i)
+        r.log(f"clip verdict: [{info_i['category']}] "
+              f"viral={info_i['viral']}/100 "
+              f"({' · '.join(info_i['reasons'])})")
+        if info_i["meta"].get("title"):
+            r.log(f"suggested title: {info_i['meta']['title']} "
+                  f"{info_i['meta']['hashtags']}")
+    except Exception as e:  # noqa: BLE001
+        r.log(f"(intelligence pass skipped: {e})")
+
     r.clip(clip)
     r.log(f"saved {fname}")
     return clip
@@ -214,7 +233,7 @@ def _vod(url, info, plat, settings: Settings, r: Reporter, stop):
 
 def _scan_and_render(media_path, dur, title, settings: Settings,
                      r: Reporter, stop):
-    """Wizard loop: select rect -> scan -> [review unless autopilot] -> render."""
+    """Wizard loop: rect -> scan -> intelligence -> [review unless autopilot]."""
     src_h = min(settings.max_height, probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
@@ -235,6 +254,13 @@ def _scan_and_render(media_path, dur, title, settings: Settings,
                 settings, media_path, (rc["x"], rc["y"], rc["w"], rc["h"]),
                 r, sample_fps=float(getattr(settings, "scan_fps", 6)))
             moments = _analyze(analyzer, settings, r, dur)
+
+        # ---- smart boundaries + hooks (multi-signal refinement) ----
+        try:
+            from . import intel
+            intel.adjust_boundaries(moments, media_path, settings, r)
+        except Exception as e:  # noqa: BLE001
+            r.log(f"(boundaries default: {e})")
         r.progress(0.50)
 
         r.review([{"start": round(m.start, 1), "end": round(m.end, 1),
