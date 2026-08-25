@@ -1,5 +1,6 @@
-"""Decision engine v2: pacing doctrine, dead-air surgeon, critic,
-retention predictor. Every choice carries a reason."""
+"""Decision engine v3: transient-aligned SFX with intensity tiers,
+protected comedy/suspense pauses, continuous effect intensities,
+dead-air surgeon with protection, critic, retention predictor."""
 from __future__ import annotations
 import json
 import math
@@ -12,28 +13,28 @@ from .intel import audio_db
 
 OUTCOMES = os.path.join(DATA_DIR, "outcomes.json")
 
-# what each moment-type is ALLOWED to use (doctrine, not vibes)
+# doctrine: 'intensity' is the master dial (0-1) scaling every effect
 PACING = {
     "reaction": dict(zoom=False, shake=False, flash=False, bloom=False,
-                     grain=False, vignette=False, beat=False,
+                     grain=False, vignette=False, beat=False, intensity=0.25,
                      note="emotional/reactive - let it breathe"),
-    "funny":    dict(zoom=True,  shake=True,  flash=True,  bloom=False,
-                     grain=False, vignette=False, beat=True,
+    "funny":    dict(zoom=True, shake=True, flash=True, bloom=False,
+                     grain=False, vignette=False, beat=True, intensity=0.85,
                      note="comedy - interrupts welcome"),
-    "clutch":   dict(zoom=True,  shake=True,  flash=False, bloom=False,
-                     grain=False, vignette=False, beat=True,
+    "clutch":   dict(zoom=True, shake=True, flash=False, bloom=False,
+                     grain=False, vignette=False, beat=True, intensity=0.70,
                      note="clutch - emphasize payoff only"),
-    "rage":     dict(zoom=True,  shake=True,  flash=False, bloom=False,
-                     grain=False, vignette=False, beat=False,
+    "rage":     dict(zoom=True, shake=True, flash=False, bloom=False,
+                     grain=False, vignette=False, beat=False, intensity=0.75,
                      note="rage - shake ok, keep cuts honest"),
-    "fail":     dict(zoom=True,  shake=False, flash=False, bloom=False,
-                     grain=False, vignette=False, beat=False,
+    "fail":     dict(zoom=True, shake=False, flash=False, bloom=False,
+                     grain=False, vignette=False, beat=False, intensity=0.55,
                      note="fail - one zoom, no circus"),
-    "win":      dict(zoom=True,  shake=False, flash=False, bloom=False,
-                     grain=False, vignette=False, beat=True,
+    "win":      dict(zoom=True, shake=False, flash=False, bloom=False,
+                     grain=False, vignette=False, beat=True, intensity=0.60,
                      note="win - steady, confident"),
     "highlight": dict(zoom=False, shake=False, flash=False, bloom=False,
-                      grain=False, vignette=False, beat=False,
+                      grain=False, vignette=False, beat=False, intensity=0.30,
                       note="default - clean and calm"),
 }
 
@@ -108,12 +109,79 @@ def predict(f: dict) -> dict:
     }
 
 
-# ------------------------------------------------------------- SFX taste
-def sfx_plan(wav_path: str, texts: str, settings, r, pool: list[str]):
+# ------------------------------------------------------- transient engine
+def find_transients(db: np.ndarray) -> list[dict]:
+    """Genuine acoustic impacts: steep dB rises. Returns
+    [{t, strength}] sorted by time. Strength = total rise across the edge."""
+    out: list[dict] = []
+    if db.size < 4:
+        return out
+    d = np.diff(db)
+    thr = max(4.5, float(np.percentile(d, 94)))
+    i = 0
+    while i < d.size:
+        if d[i] >= thr:
+            j = i
+            while j + 1 < d.size and d[j + 1] >= thr * 0.8:
+                j += 1
+            peak_i = int(np.argmax(db[i:j + 2])) + i
+            out.append({"t": float(peak_i),
+                        "strength": float(db[peak_i]
+                                          - db[max(0, i - 1)])})
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+# ------------------------------------------------------ protected pauses
+def analyze_silences(wav_db: np.ndarray, rel_floor: float = 4.0,
+                     min_len: float = 0.35) -> tuple[list, float]:
+    if wav_db.size < 6:
+        return [], -60.0
+    floor = float(np.percentile(wav_db, 20))
+    quiet = wav_db < floor + rel_floor
+    spans, i = [], 0
+    while i < wav_db.size:
+        if quiet[i]:
+            j = i
+            while j < wav_db.size and quiet[j]:
+                j += 1
+            if (j - i) >= min_len:
+                spans.append((float(i), float(j)))
+            i = j
+        else:
+            i += 1
+    return spans, floor
+
+
+def find_protected_pauses(wav_path: str) -> list[dict]:
+    """Silences of 0.35-1.6s that precede a >=5dB energy rise are almost
+    always comedic/suspense beats. The surgeon may never cut these."""
+    db = audio_db(wav_path)
+    silences, floor = analyze_silences(db)
+    out = []
+    for a, b in silences:
+        if not (0.35 <= (b - a) <= 1.6) or b >= db.size - 1:
+            continue
+        before = float(db[max(0, int(a) - 1)])
+        after_i = min(int(b) + 1, db.size - 1)
+        if db[after_i] - max(before, floor) >= 5.0:
+            out.append({"a": a, "b": b,
+                        "reason": f"pause-then-{db[after_i] - before:.0f}dB "
+                                  f"rise (comedy/suspense beat)"})
+    return out
+
+
+# ---------------------------------------------------------- SFX taste v2
+def sfx_plan(wav_path: str, texts: str, settings, r, pool: list[str],
+             protected: list[dict] | None = None):
     events: list[dict] = []
     notes: list[str] = []
+    protected = protected or []
     db = audio_db(wav_path)
     n = db.size
+    transients = find_transients(db)
 
     def find(name):
         for p in pool:
@@ -121,63 +189,90 @@ def sfx_plan(wav_path: str, texts: str, settings, r, pool: list[str]):
                 return p
         return None
 
+    def in_protected(t: float) -> bool:
+        return any(sp["a"] - 0.1 <= t <= sp["b"] + 0.1 for sp in protected)
+
+    def push_outside(t: float) -> float:
+        for sp in protected:
+            if sp["a"] - 0.15 <= t <= sp["b"] + 0.15:
+                return sp["b"] + 0.25
+        return t
+
     dur_est = max(5.0, n)
-    impact_t = min(max(settings.pre_roll, 0.2), dur_est * 0.35)
-    ia = int(np.clip(impact_t, 0, max(0, n - 1)))
-    spike = bool(n > ia + 2
-                 and (db[ia] - db[int(np.clip(ia - 3, 0, n - 1))] > 5.0))
-    conf = 0.85 if spike else 0.45
+    intent_t = min(max(settings.pre_roll, 0.2), dur_est * 0.35)
+
+    # --- snap intended impact to the nearest REAL transient (+-0.8s) ---
+    snapped, tier_gain, tier_note = intent_t, 0.0, "guessed"
+    cand = [tr for tr in transients if abs(tr["t"] - intent_t) <= 0.8]
+    if cand:
+        best = max(cand, key=lambda t_: t_["strength"])
+        snapped = push_outside(best["t"])
+        s = best["strength"]
+        if s >= 13:
+            tier_gain, tier_note = 0.0, f"STRONG transient ({s:.0f}dB)"
+        elif s >= 8:
+            tier_gain, tier_note = -3.0, f"MEDIUM transient ({s:.0f}dB)"
+        else:
+            tier_gain, tier_note = -6.0, f"subtle transient ({s:.0f}dB)"
 
     air = find("airhorn")
     if air:
-        gain = settings.sfx_volume_db if conf > 0.6 \
-            else settings.sfx_volume_db - 6
-        events.append({"t": impact_t, "file": air, "gain_db": gain})
-        notes.append(f"impact @ {impact_t:.1f}s conf={conf:.2f}"
-                     + ("" if conf > 0.6 else " -> softened -6dB"))
+        events.append({"t": snapped, "file": air,
+                       "gain_db": settings.sfx_volume_db + tier_gain})
+        notes.append(f"impact @ {snapped:.2f}s [{tier_note}]")
 
+    # anticipation: a protected pause IS detected suspense -> riser leads in
     riser = find("riser")
-    if riser and spike and impact_t > 1.8:
-        events.append({"t": impact_t - 1.6, "file": riser,
-                       "gain_db": settings.sfx_volume_db - 7})
-        notes.append("riser before genuine drop")
+    if riser and protected and snapped > 1.8:
+        pa = min(protected, key=lambda sp: abs(sp["a"] - snapped))
+        if snapped - pa["b"] < 3.0:
+            rt = max(0.2, pa["a"] - 1.4)
+            events.append({"t": rt, "file": riser,
+                           "gain_db": settings.sfx_volume_db - 7})
+            notes.append(f"riser @ {rt:.2f}s leading into protected "
+                         f"suspense pause")
 
     t = (texts or "").lower()
     boom = find("vine_boom")
+    bt = min(dur_est - 1, max(1.0, dur_est * 0.55))
     if boom and any(w in t for w in ("lol", "lmao", "bruh", "haha",
                                      "fall", "fail", "oof")):
-        events.append({"t": min(dur_est - 1, max(1.0, dur_est * 0.55)),
-                       "file": boom,
-                       "gain_db": settings.sfx_volume_db - 4})
-        notes.append("cartoon boom (comedy markers)")
+        bt = push_outside(bt + 0.15)      # post-punchline placement
+        if abs(bt - snapped) >= 1.5:
+            events.append({"t": bt, "file": boom,
+                           "gain_db": settings.sfx_volume_db - 4})
+            notes.append("cartoon boom AFTER punchline zone (comedy)")
 
-    if not spike:
-        notes.append("restraint: flat energy -> no stacked SFX")
+    if not transients:
+        notes.append("restraint: no genuine transients found - minimal SFX")
     return events, notes
 
 
-# ---------------------------------------------------------- pacing matrix
+# -------------------------------------------------------------- doctrine
 def pacing_plan(category: str, score: float):
-    doc = PACING.get(category, PACING["highlight"])
-    return doc
+    return PACING.get(category, PACING["highlight"])
 
 
-def punch_decision(category: str, score: float):
-    if category in ("funny", "reaction"):
-        return True, 0.10, "pattern-interrupt suits comedy beats"
-    if category == "clutch" and score >= 60:
-        return True, 0.09, "emphasis on clutch payoff"
-    if category == "rage":
-        return True, 0.08, "amped frustration framing"
+def punch_decision(category: str, score: float, intensity: float = 0.5):
+    """Returns (do_zoom, intensity_fraction, reason). Fraction scales with
+    doctrine intensity + event importance - dials, not switches."""
+    base = {"funny": 0.11, "reaction": 0.09, "clutch": 0.09,
+            "rage": 0.08, "fail": 0.07}.get(category, 0.0)
+    if base and (score >= 55 or category in ("funny", "reaction")):
+        frac = _clamp(base * (0.7 + 0.6 * intensity), 0.04, 0.13)
+        return True, frac, f"{category} emphasis @ doctrine intensity " \
+                           f"{intensity:.2f}"
     return False, 0.0, "held steady - tone benefits from calm camera"
 
 
 # ------------------------------------------------------ dead-air surgeon
 def find_dead_air(wav_path: str, min_pause: float = 1.2,
-                  rel_floor: float = 4.0) -> list[tuple[float, float]]:
+                  rel_floor: float = 4.0,
+                  protected: list[dict] | None = None) -> list[tuple]:
     db = audio_db(wav_path)
     if db.size < 10:
         return []
+    protected = protected or []
     floor = float(np.percentile(db, 20)) + rel_floor
     quiet = db < floor
     spans, i = [], 0
@@ -191,18 +286,30 @@ def find_dead_air(wav_path: str, min_pause: float = 1.2,
             i = j
         else:
             i += 1
+    if protected:
+        kept = []
+        for a, b in spans:
+            hit = any(not (b < sp["a"] - 0.15 or a > sp["b"] + 0.15)
+                      for sp in protected)
+            (kept if not hit else []).append((a, b)) if not hit else None
+        spans = [(a, b) for (a, b) in spans
+                 if all(b < sp["a"] - 0.15 or a > sp["b"] + 0.15
+                        for sp in protected)]
+        del kept
     return spans
 
 
 def build_trimmed(src: str, dest: str, start: float, dur: float,
-                  pauses: list[tuple[float, float]]):
-    """Removes internal pauses from the [start,start+dur] window.
-    Returns (new_src, mapping) where mapping converts original-relative
-    times to trimmed-relative times."""
+                  pauses: list[tuple[float, float]],
+                  protected: list[dict] | None = None):
     from .utils import resolve_bin
     lo, hi = start, start + dur
     inner = [(max(lo, a), min(hi, b)) for a, b in pauses]
     inner = [(a, b) for a, b in inner if b - a >= min(1.0, dur * 0.04)]
+    if protected:
+        inner = [(a, b) for a, b in inner
+                 if all(b < sp["a"] - 0.15 or a > sp["b"] + 0.15
+                        for sp in protected)]
     if not inner:
         return None, []
     kept, cursor = [], lo
@@ -212,18 +319,14 @@ def build_trimmed(src: str, dest: str, start: float, dur: float,
         cursor = max(cursor, b)
     if hi - cursor >= 0.8:
         kept.append((cursor, hi))
-    removed = sum(b - a for a, b in inner) \
-        - (lo and 0)
     if not kept or len(kept) > 4:
-        return None, []          # too chopped -> leave it alone
+        return None, []
 
     inputs: list[str] = []
     fc: list[str] = []
     for k, (a, b) in enumerate(kept):
         inputs += ["-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-i", src]
-        fc.append(f"[{k}:v]scale=iw/2*2:ih/2*2[v{k}]"
-                  .replace("/2*2", ""))
-        fc[-1] = f"[{k}:v]null[v{k}];[{k}:a]anull[a{k}]"
+        fc.append(f"[{k}:v]null[v{k}];[{k}:a]anull[a{k}]")
     fc.append("".join(f"[v{k}][a{k}]" for k in range(len(kept)))
               + f"concat=n={len(kept)}:v=1:a=1[outv][outa]")
     cmd = [resolve_bin("ffmpeg"), "-y", "-v", "error", *inputs,
@@ -231,31 +334,24 @@ def build_trimmed(src: str, dest: str, start: float, dur: float,
            "-map", "[outv]", "-map", "[outa]",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
            "-c:a", "aac", "-b:a", "192k", dest]
-    from .utils import run
     run(cmd)
 
-    mapping = []
-    new_t = 0.0
-    ki = 0
-    for a, b in inner:
-        while ki < len(kept) and kept[ki][1] <= a:
-            new_t += kept[ki][1] - kept[ki][0]
-            ki += 1
-        mapping.append({"cut_start": a - lo, "cut_end": b - lo,
-                        "shift_after": -(b - a)})
+    mapping = {"spans": [{"cut_start": a - lo, "cut_end": b - lo}
+                         for a, b in inner]}
     total = sum(b - a for a, b in kept)
-    return dest, {"spans": inner, "total_removed": dur - total,
-                  "new_dur": total}
+    mapping["total_removed"] = dur - total
+    mapping["new_dur"] = total
+    return dest, mapping
 
 
 def remap(t: float, mapping: dict | None) -> float:
     if not mapping:
         return t
     for sp in mapping["spans"]:
-        if t >= sp[1]:
-            t -= (sp[1] - sp[0])
-        elif t > sp[0]:
-            t = sp[0]
+        if t >= sp["cut_end"]:
+            t -= (sp["cut_end"] - sp["cut_start"])
+        elif t > sp["cut_start"]:
+            t = sp["cut_start"]
     return t
 
 
