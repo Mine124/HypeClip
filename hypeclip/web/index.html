@@ -14,7 +14,7 @@
 <header class="topbar">
   <div class="logo"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="url(#g)" d="M13 2 3 14h6l-2 8L19 9h-6l2-7z"/>
     <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs></svg>
-    <span>Hype<b>Clip</b></span><em>PRO · v3.2</em></div>
+    <span>Hype<b>Clip</b></span><em>AUTOPILOT · v3.2</em></div>
   <div class="head-right"><span id="engineDot" class="dot"></span>
     <span id="engineTxt">...</span>
     <button id="folderBtn" class="ghost-btn">Output</button></div>
@@ -23,9 +23,9 @@
 <main>
 <section class="card hero">
   <h1>Turn any stream into clips.</h1>
-  <p>Paste a link — or drop in a video you downloaded yourself. Draw a box over
-     the chat; when it scrolls supernova-fast, that becomes a clip.
-     Default output: <b>9:16 · 1080p · 60fps · 90s · TikTok captions</b>.</p>
+  <p>Paste a link (or drop a video below), draw a box over the chat, hit start —
+     come back later to finished clips. Clean output by default: no filters,
+     no gimmicks, just captions.</p>
   <div class="srcrow">
     <input id="urlInput" spellcheck="false"
       placeholder="YouTube · Twitch VOD · TikTok · any video link..."/>
@@ -60,11 +60,17 @@
         <option value="clean">Clean</option></select></label>
       <label class="sw"><input id="optCaps" type="checkbox" checked/><i></i>Captions</label>
       <label class="sw"><input id="optSfx" type="checkbox" checked/><i></i>SFX</label>
-      <label class="sw"><input id="optZoom" type="checkbox" checked/><i></i>Zoom punch</label>
-      <label class="sw"><input id="optBeat" type="checkbox" checked/><i></i>Beat sync</label>
-      <label>Grade<select id="optLook"><option value="capcut" selected>CapCut pop</option>
-        <option value="cinematic">Cinematic</option><option value="noir">Noir</option>
-        <option value="vhs">VHS</option><option value="none">None</option></select></label>
+      <label class="sw"><input id="optZoom" type="checkbox"/><i></i>Zoom punch</label>
+      <label class="sw"><input id="optBeat" type="checkbox"/><i></i>Beat sync</label>
+      <label class="sw"><input id="optFlash" type="checkbox"/><i></i>Intro flash</label>
+      <label class="sw"><input id="optBloom" type="checkbox"/><i></i>Bloom</label>
+      <label class="sw"><input id="optGrain" type="checkbox"/><i></i>Film grain</label>
+      <label class="sw"><input id="optVig" type="checkbox"/><i></i>Vignette</label>
+      <label>Grade<select id="optLook">
+        <option value="none" selected>None (clean)</option>
+        <option value="capcut">CapCut pop</option>
+        <option value="cinematic">Cinematic</option>
+        <option value="noir">Noir</option><option value="vhs">VHS</option></select></label>
     </div>
   </details>
   <div id="errBox"></div>
@@ -104,9 +110,14 @@
     <div class="row">
       <button id="btnDraw" class="mini-btn">📐 Select chat area</button>
       <label class="sw slim"><input type="checkbox" id="noChat"/><i></i>
-        No chat visible — find hype from audio instead</label>
+        No chat — use audio instead</label>
       <span class="flex1"></span>
       <button id="btnScan" class="cta sm" disabled>Start scanning ✨</button>
+    </div>
+    <div class="row">
+      <label class="sw"><input type="checkbox" id="optAuto" checked/><i></i>
+        🚀 Autopilot — render clips automatically after the scan (walk away,
+        come back to finished videos)</label>
     </div>
     <p id="drawHint" class="hint hidden">Drag a rectangle around the chat panel.
       Include a little padding. Redraw anytime.</p>
