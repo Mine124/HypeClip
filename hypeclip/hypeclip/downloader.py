@@ -10,7 +10,6 @@ def _clean(s: str) -> str:
 
 
 def _remux_for_browser(path: str, reporter) -> str:
-    """Stream-copy remux so the file plays instantly in <video> tags."""
     from .utils import resolve_bin, run
     out = os.path.splitext(path)[0] + "_web.mp4"
     if os.path.isfile(out) and os.path.getsize(out) > 0:
@@ -52,47 +51,37 @@ def _extract(url: str, opts: dict, reporter):
     raise last  # pragma: no cover
 
 
-def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
-    import yt_dlp
-    os.makedirs(out_dir, exist_ok=True)
-    h = settings.max_height
-    last_pct = [-1]
+def _base_opts(settings) -> dict:
+    o = {"merge_output_format": "mp4", "noplaylist": True, "quiet": True,
+         "no_warnings": True, "retries": 8, "fragment_retries": 8,
+         "concurrent_fragment_downloads": 2,
+         "nopart": True, "continuedl": False}
+    ffd = _bundled_ffmpeg_dir()
+    if ffd:
+        o["ffmpeg_location"] = ffd
+    if settings.cookies_browser:
+        o["cookiesfrombrowser"] = (settings.cookies_browser,)
+    return o
 
-    def hook(d):
-        if d.get("status") == "downloading":
-            tot = d.get("total_bytes") or d.get("total_bytes_estimate")
-            got = d.get("downloaded_bytes") or 0
-            frac = (got / tot) if tot else None
-            if frac is not None:
-                pct = int(frac * 100)
-                if pct != last_pct[0] and pct % 5 == 0:
-                    last_pct[0] = pct
-                    reporter.log(f"D  {pct:3d}%  "
-                                 f"ETA {_clean(d.get('_eta_str', '')).strip()}")
-                if progress_cb:
-                    progress_cb(frac)
 
-    fmt = (
-        f"bv*[vcodec^=avc1][height<={h}]+ba[acodec^=mp4a]/"
-        f"b[vcodec^=avc1][height<={h}]/"
-        f"bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b"
-    )
-    opts = {
-        "format": fmt,
-        "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 8,
-        "fragment_retries": 8,
-        "concurrent_fragment_downloads": 2,
-        # --- the 416 fix: never resume from stale partial state ---
-        "nopart": True,
-        "continuedl": False,
-        "progress_hooks": [hook],
-    }
-    # wipe stale leftovers from earlier crashes - they cause HTTP 416
+def _fmt_hd(h: int) -> str:
+    return (f"bv*[vcodec^=avc1][height<={h}]+ba[acodec^=mp4a]/"
+            f"b[vcodec^=avc1][height<={h}]/"
+            f"bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b")
+
+
+def _pick_file(prepared: str) -> str:
+    base = os.path.splitext(prepared)[0]
+    hits = sorted(glob.glob(base + ".*") + glob.glob(base),
+                  key=os.path.getsize, reverse=True)
+    hits = [p for p in hits if os.path.isfile(p)
+            and not p.endswith((".part", ".ytdl"))]
+    if not hits:
+        raise RuntimeError("download finished but output file not found")
+    return hits[0]
+
+
+def _clean_junk(out_dir: str):
     for junk in (glob.glob(os.path.join(out_dir, "*.part"))
                  + glob.glob(os.path.join(out_dir, "*.ytdl"))):
         try:
@@ -100,25 +89,98 @@ def download_vod(url: str, out_dir: str, settings, reporter, progress_cb=None):
         except OSError:
             pass
 
-    ffd = _bundled_ffmpeg_dir()
-    if ffd:
-        opts["ffmpeg_location"] = ffd
-    if settings.cookies_browser:
-        opts["cookiesfrombrowser"] = (settings.cookies_browser,)
 
+# ------------------------------------------------------------------ proxy
+def download_proxy(url: str, out_dir: str, settings, reporter,
+                   progress_cb=None):
+    """Fast lightweight pass (480p) used for preview/scan/tracking."""
+    import yt_dlp
+    os.makedirs(out_dir, exist_ok=True)
+    _clean_junk(out_dir)
+    last = [-1]
+
+    def hook(d):
+        if d.get("status") == "downloading":
+            tot = d.get("total_bytes") or d.get("total_bytes_estimate")
+            got = d.get("downloaded_bytes") or 0
+            if tot:
+                pct = int(got / tot * 100)
+                if pct != last[0] and pct % 10 == 0:
+                    last[0] = pct
+                    reporter.log(f"P {pct:3d}%  (lightweight pass)")
+                if progress_cb:
+                    progress_cb(got / tot)
+
+    opts = _base_opts(settings)
+    opts.update({
+        "format": ("bv*[height<=480][vcodec^=avc1]+ba[acodec^=mp4a]/"
+                   "b[height<=480]/bv*+ba/b"),
+        "outtmpl": os.path.join(out_dir, "%(id)s_proxy.%(ext)s"),
+        "concurrent_fragment_downloads": 8,
+        "progress_hooks": [hook],
+    })
     info, prepared = _extract(url, opts, reporter)
-
-    base = os.path.splitext(prepared)[0]
-    hits = sorted(glob.glob(base + ".*") + glob.glob(base),
-                  key=os.path.getsize, reverse=True)
-    hits = [p for p in hits if os.path.isfile(p)
-            and not p.endswith((".part", ".ytdl"))]
-    if not hits:
-        raise RuntimeError("Download finished but output file not found.")
-    path = hits[0]
-
+    path = _pick_file(prepared)
     try:
         path = _remux_for_browser(path, reporter)
     except Exception as e:  # noqa: BLE001
-        reporter.log(f"preview-prep skipped ({e}) - using raw download")
+        reporter.log(f"preview-prep skipped ({e})")
+    return path, info
+
+
+# ------------------------------------------------------------- HD segment
+def download_segment(url: str, start: float, end: float, out_dir: str,
+                     settings, reporter, idx: int = 0) -> str:
+    """Downloads ONLY [start,end] in full quality."""
+    import yt_dlp
+    os.makedirs(out_dir, exist_ok=True)
+    _clean_junk(out_dir)
+    opts = _base_opts(settings)
+    opts.update({
+        "format": _fmt_hd(settings.max_height),
+        "outtmpl": os.path.join(out_dir, f"hdseg{idx}.%(ext)s"),
+        "download_ranges": lambda info, ydl: [
+            {"start_time": max(0.0, start), "end_time": max(end, start + 5)}],
+        "force_keyframes_at_cuts": True,
+        "progress_hooks": [],
+    })
+    reporter.log(f"fetching HD segment {idx + 1} "
+                 f"({end - start:.0f}s, full quality)...")
+    info, prepared = _extract(url, opts, reporter)
+    return _pick_file(prepared)
+
+
+# ------------------------------------------------------- legacy full VOD
+def download_vod(url: str, out_dir: str, settings, reporter,
+                 progress_cb=None):
+    """Full-quality full-length download (fallback / forced mode)."""
+    import yt_dlp
+    os.makedirs(out_dir, exist_ok=True)
+    _clean_junk(out_dir)
+    last = [-1]
+
+    def hook(d):
+        if d.get("status") == "downloading":
+            tot = d.get("total_bytes") or d.get("total_bytes_estimate")
+            got = d.get("downloaded_bytes") or 0
+            if tot:
+                pct = int(got / tot * 100)
+                if pct != last[0] and pct % 5 == 0:
+                    last[0] = pct
+                    reporter.log(f"D  {pct:3d}%  "
+                                 f"ETA {_clean(d.get('_eta_str', '')).strip()}")
+                if progress_cb:
+                    progress_cb(got / tot)
+
+    opts = _base_opts(settings)
+    opts.update({"format": _fmt_hd(settings.max_height),
+                 "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
+                 "concurrent_fragment_downloads": 2,
+                 "progress_hooks": [hook]})
+    info, prepared = _extract(url, opts, reporter)
+    path = _pick_file(prepared)
+    try:
+        path = _remux_for_browser(path, reporter)
+    except Exception as e:  # noqa: BLE001
+        reporter.log(f"preview-prep skipped ({e})")
     return path, info
