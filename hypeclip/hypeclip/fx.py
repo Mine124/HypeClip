@@ -12,9 +12,11 @@ GRADES = {
     "none": "",
     "capcut": "eq=saturation=1.22:contrast=1.06:brightness=0.01,"
               "unsharp=5:5:0.6:5:5:0.0",
-    "cinematic": "curves=r=0/0.02:0.5/0.53:1/0.99:"
-                 "g=0/0.01:0.5/0.5:1/0.99:"
-                 "b=0/0.05:0.5/0.48:1/0.95,"
+    # NOTE: literal colons inside curves points MUST be escaped (\:) -
+    # otherwise ffmpeg parses them as new option names.
+    "cinematic": "curves=r='0/0.02 0.5/0.53 1/0.99'"
+                 ":g='0/0.01 0.5/0.5 1/0.99'"
+                 ":b='0/0.05 0.5/0.48 1/0.95',"
                  "colorbalance=rs=-0.06:bs=0.09:rm=0.02:bm=-0.04,"
                  "eq=saturation=0.92:contrast=1.08",
     "noir": "hue=s=0,eq=contrast=1.22:brightness=-0.03,unsharp=5:5:0.8",
@@ -86,7 +88,7 @@ def _run_ffmpeg_progress(cmd: list[str], dur: float, reporter):
             pass
     if rc != 0:
         raise RuntimeError(f"FFmpeg render failed (exit code {rc}). "
-                           f"Try lowering quality/FPS or turning off Bloom.")
+                           f"If this repeats, try a different Color Grade.")
 
 
 def render_clip(plan: dict, reporter) -> None:
