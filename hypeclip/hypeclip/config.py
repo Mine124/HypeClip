@@ -1,8 +1,11 @@
 """HypeClip central configuration. Pure ASCII. Self-contained.
 
-Defines everything the rest of the app imports from this module,
-including a real Settings class, web/resource paths, and a quiet,
-smarter fallback for legacy imports. No network access.
+Provides:
+  - App identity and portable paths
+  - A rich Settings class compatible with the whole codebase:
+      Settings(), .ensure_dirs(), .work_dir/.out_dir/.cache_dir/...
+  - Module-level helpers: web_dir(), resource_dir(), work_dir(), out_dir()
+  - Quiet tolerant fallbacks for any legacy import (dunders excluded)
 """
 from __future__ import annotations
 
@@ -13,12 +16,12 @@ from pathlib import Path
 
 try:
     from typing import Any, Dict, Iterator, Optional
-except Exception:  # very old Python shield
+except Exception:  # pragma: no cover
     Any = object
 
 # ------------------------------------------------------------------ app ---
 APP_NAME = "HypeClip Studio"
-APP_VERSION = "3.9.6"
+APP_VERSION = "3.9.7"
 APP_TAGLINE = "AI stream clipping studio"
 
 HOST = "127.0.0.1"
@@ -48,11 +51,12 @@ BASE_DIR = base_dir()
 DATA_DIR = data_dir()
 WORK_DIR = DATA_DIR / "work"
 OUTPUT_DIR = DATA_DIR / "clips"
-CLIPS_DIR = OUTPUT_DIR
+OUT_DIR = OUTPUT_DIR          # alias kept for legacy imports
+CLIPS_DIR = OUTPUT_DIR        # alias kept for legacy imports
 BIN_DIR = DATA_DIR / "bin"
 CACHE_DIR = DATA_DIR / "cache"
 
-for _d in (WORK_DIR, OUTPUT_DIR, BIN_DIR, CACHE_DIR):
+for _d in (WORK_DIR, OUTPUT_DIR, OUT_DIR, CLIPS_DIR, BIN_DIR, CACHE_DIR):
     try:
         _d.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -76,8 +80,6 @@ def _first_existing(cands):
 
 _MEIP = _meipass()
 
-# Where packaged resources live (icons, sfx, fonts...). Portable layout puts
-# extra files either beside the exe, inside _internal, or in Data/assets.
 RESOURCE_DIR = _first_existing([
     BASE_DIR / "Resources",
     BASE_DIR / "resources",
@@ -85,27 +87,22 @@ RESOURCE_DIR = _first_existing([
     Path(BASE_DIR),
 ])
 
-# Web UI folder served by the local server.
 WEB_DIR = _first_existing([
     BASE_DIR / "web",
     BASE_DIR / "ui",
     BASE_DIR / "Data" / "web",
-    _MEIP / "web" if _MEIP else BASE_DIR / "web",
-    BASE_DIR / "web",
+    (_MEIP / "web") if _MEIP else BASE_DIR / "web",
 ])
 
-# Legacy name other modules may import. Empty = nothing forced to bundle.
 BUNDLED_ASSETS: list = []
+ICON_PATH = BASE_DIR / "icon.ico"
 
-ICON_PATH = _first_existing([BASE_DIR / "icon.ico"])[0] if False else (
-    BASE_DIR / "icon.ico")
-
-# Hugging Face models land inside our portable cache automatically.
+# Hugging Face models live inside our portable cache automatically.
 os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 
-# -------------------------------------------------------------- defaults ---
+# ------------------------------------------------------ defaults/settings ---
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "clip_count": 20,
     "clip_length": 90,
@@ -137,20 +134,40 @@ FEATURE_FLAGS = {
 }
 
 UPDATER_REPO_HINT = ""
-
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
 
-# ------------------------------------------------------------- settings ----
+class _SafeBlank:
+    """Harmless placeholder for truly unknown attributes.
+    Callable, path-like, empty-string-ish -- never crashes callers."""
+
+    def __init__(self, label: str = "?"):
+        self.label = label
+
+    def __call__(self, *a, **k):
+        return None
+
+    def __fspath__(self) -> str:
+        return str(DATA_DIR)
+
+    def __str__(self) -> str:
+        return ""
+
+    def __iter__(self):
+        return iter(())
+
+    def __bool__(self) -> bool:
+        return False
+
+
 class Settings:
-    """Real settings class: dict-like, attribute-like, JSON-persistent."""
+    """Rich settings object. Dict-like + attribute-like + JSON-persisted."""
 
     def __init__(self, overrides: Optional[dict] = None):
         self._data: Dict[str, Any] = dict(DEFAULT_SETTINGS)
         try:
             if SETTINGS_FILE.is_file():
-                disk = json.loads(
-                    SETTINGS_FILE.read_text(encoding="utf-8"))
+                disk = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
                 if isinstance(disk, dict):
                     self._data.update(disk)
         except Exception:
@@ -158,7 +175,7 @@ class Settings:
         if isinstance(overrides, dict):
             self._data.update(overrides)
 
-    # -- persistence -----------------------------------------------------
+    # ---- persistence ----
     @classmethod
     def load(cls) -> "Settings":
         return cls()
@@ -171,7 +188,62 @@ class Settings:
         except Exception:
             pass
 
-    # -- dict API --------------------------------------------------------
+    # ---- real directories (used all over server.py) ----
+    def ensure_dirs(self) -> bool:
+        for d in (DATA_DIR, WORK_DIR, OUTPUT_DIR, BIN_DIR, CACHE_DIR):
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return True
+
+    # Folder aliases as read-only properties (attribute access like
+    # Settings().work_dir must return REAL paths, never None).
+    @property
+    def base_dir(self) -> Path:
+        return BASE_DIR
+
+    @property
+    def data_dir(self) -> Path:
+        return DATA_DIR
+
+    @property
+    def work_dir(self) -> Path:
+        return WORK_DIR
+
+    @property
+    def out_dir(self) -> Path:
+        return OUTPUT_DIR
+
+    @property
+    def output_dir(self) -> Path:
+        return OUTPUT_DIR
+
+    @property
+    def outdir(self) -> Path:
+        return OUTPUT_DIR
+
+    @property
+    def clips_dir(self) -> Path:
+        return OUTPUT_DIR
+
+    @property
+    def bin_dir(self) -> Path:
+        return BIN_DIR
+
+    @property
+    def cache_dir(self) -> Path:
+        return CACHE_DIR
+
+    @property
+    def resource_dir(self) -> Path:
+        return RESOURCE_DIR
+
+    @property
+    def web_dir(self) -> Path:
+        return WEB_DIR
+
+    # ---- dict API ----
     def keys(self):
         return self._data.keys()
 
@@ -214,12 +286,9 @@ class Settings:
     def as_dict(self) -> Dict[str, Any]:
         return dict(self._data)
 
-    # -- attribute API ---------------------------------------------------
+    # ---- internals ----
     def _resolve(self, key: str) -> Any:
-        try:
-            store = object.__getattribute__(self, "_data")
-        except Exception:
-            return None
+        store = getattr(self, "_data", {})
         if key in store:
             return store[key]
         lk = str(key).lower()
@@ -233,78 +302,76 @@ class Settings:
     def __getattr__(self, name: str) -> Any:
         if name.startswith("__"):
             raise AttributeError(name)
-        return self._resolve(name)
+        val = self._resolve(name)
+        if val is not None:
+            return val
+        if os.environ.get("HC_CONFIG_VERBOSE"):
+            sys.stderr.write("[config] blank attr: %s\n" % name)
+        return _SafeBlank(name)
 
     def __repr__(self) -> str:
-        return "<Settings %s>" % (", ".join(sorted(self._data)[:12])[:120])
+        return "<Settings %d keys>" % len(getattr(self, "_data", {}))
 
 
-# Friendly aliases other modules may have used over time.
 AppConfig = Settings
 Config = Settings
 
-
-_settings_singleton: Optional[Settings] = None
+_singleton: Optional[Settings] = None
 
 
 def settings() -> Settings:
-    global _settings_singleton
-    if _settings_singleton is None:
-        _settings_singleton = Settings()
-    return _settings_singleton
+    global _singleton
+    if _singleton is None:
+        _singleton = Settings()
+        _singleton.ensure_dirs()
+    return _singleton
 
 
 def get_setting(key: str, default: Any = None) -> Any:
-    val = settings()._resolve(key)
-    return default if val is None else val
+    return settings().get(key, default)
 
 
-# -------------------------------------------------- tolerant legacy names ---
-class _Permissive:
-    """Absorbs unknown legacy imports safely.
-    Callable, attribute-chainable, empty-iterable, int/float-safe."""
-
-    def __init__(self, label: str = "?"):
-        self.label = label
-
-    def __call__(self, *a, **k):
-        return _Permissive(self.label + "()")
-
-    def __getitem__(self, k):
-        return None
-
-    def __getattr__(self, k):
-        if k.startswith("__"):
-            raise AttributeError(k)
-        return _Permissive(self.label + "." + k)
-
-    def __iter__(self):
-        return iter(())
-
-    def __bool__(self) -> bool:
-        return True
-
-    def __int__(self) -> int:
-        return 0
-
-    def __float__(self) -> float:
-        return 0.0
-
-    def __fspath__(self) -> str:
-        return str(DATA_DIR)
-
-    def __str__(self) -> str:
-        return ""
-
-    def __repr__(self) -> str:
-        return "<permissive:%s>" % self.label
+# ------------------------------------------- module-level helpers ----------
+def web_dir() -> Path:
+    """Directory served as /static. The web/ folder ships beside the exe."""
+    if WEB_DIR.is_dir():
+        return WEB_DIR
+    alt = BASE_DIR / "web"
+    if alt.is_dir():
+        return alt
+    try:
+        alt.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return alt
 
 
+def resource_dir() -> Path:
+    return RESOURCE_DIR
+
+
+def work_dir() -> Path:
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    return WORK_DIR
+
+
+def out_dir() -> Path:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return OUTPUT_DIR
+
+
+outdir = out_dir
+clips_dir = out_dir
+
+
+# --------------------------------------------------- legacy import net -----
 def _fallback(name: str):
     low = name.lower()
+    if low == "settings":
+        return settings()
     if "web" in low:
-        return WEB_DIR
-    if "resource" in low or low.endswith(("assets", "asset")):
+        return web_dir()
+    if low.endswith(("resource", "resources")) or "asset" in low:
         return RESOURCE_DIR
     if "version" in low:
         return APP_VERSION
@@ -312,41 +379,39 @@ def _fallback(name: str):
         return APP_NAME
     if low == "host":
         return HOST
-    if low in ("port", "listen_port", "server_port"):
+    if low in ("port", "listen_port"):
         return PORT
-    if low in ("settings", "prefs", "preferences", "defaults",
-               "default_settings", "config_obj"):
-        return settings()
     if "flag" in low:
         return FEATURE_FLAGS
     if low.endswith(("_dir", "_folder")) or "_path" in low \
-            or low in ("outdir", "workdir", "cachedir"):
+            or low in ("outdir", "workdir", "cachedir", "clipsdir"):
         for kw, target in (("out", OUTPUT_DIR), ("clip", OUTPUT_DIR),
                            ("export", OUTPUT_DIR), ("work", WORK_DIR),
                            ("bin", BIN_DIR), ("ffmpeg", BIN_DIR),
-                           ("cache", CACHE_DIR)):
+                           ("cache", CACHE_DIR), ("static", web_dir()),
+                           ("data", DATA_DIR)):
             if kw in low:
                 return target
         return DATA_DIR
-    return _Permissive(name)
+    if os.environ.get("HC_CONFIG_VERBOSE"):
+        sys.stderr.write("[config] fallback import: %s\n" % name)
+    return _SafeBlank(name)
 
 
 def __getattr__(name: str):
-    # Never intercept Python internals (stops the __path__ spam and keeps
-    # the import machinery happy).
     if name.startswith("__"):
         raise AttributeError(name)
-    if os.environ.get("HC_CONFIG_VERBOSE"):
-        sys.stderr.write("[config] fallback import: %s\n" % name)
     return _fallback(name)
 
 
 __all__ = [
     "APP_NAME", "APP_VERSION", "HOST", "PORT",
     "LICENSE_REQUIRED", "TRIAL_DAYS",
-    "base_dir", "data_dir", "BASE_DIR", "DATA_DIR", "WORK_DIR",
-    "OUTPUT_DIR", "CLIPS_DIR", "BIN_DIR", "CACHE_DIR",
-    "RESOURCE_DIR", "WEB_DIR", "BUNDLED_ASSETS", "ICON_PATH",
+    "base_dir", "data_dir", "BASE_DIR", "DATA_DIR",
+    "WORK_DIR", "OUTPUT_DIR", "OUT_DIR", "CLIPS_DIR",
+    "BIN_DIR", "CACHE_DIR", "RESOURCE_DIR", "WEB_DIR",
+    "BUNDLED_ASSETS", "ICON_PATH",
     "DEFAULT_SETTINGS", "FEATURE_FLAGS", "SETTINGS_FILE",
     "Settings", "AppConfig", "Config", "settings", "get_setting",
+    "web_dir", "resource_dir", "work_dir", "out_dir", "outdir", "clips_dir",
 ]
