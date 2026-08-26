@@ -202,4 +202,48 @@ def make_metadata(texts: str, src_title: str, cat: str) -> dict:
 
 # ------------------------------------------------------------ thumbnails
 def thumbnails(video: str, impact_t: float, out_dir: str, stem: str,
-               count: int = 3) -> list[str]
+               count: int = 3) -> list[str]:
+    from .utils import resolve_bin
+    urls = []
+    offs = [0.0, 1.2, -1.2] if count >= 3 else [0.0]
+    for i, off in enumerate(offs[:count]):
+        t = max(0.1, impact_t + off)
+        dest = os.path.join(out_dir, f"{stem}_thumb{i + 1}.jpg")
+        try:
+            subprocess.run(
+                [resolve_bin("ffmpeg"), "-y", "-v", "error",
+                 "-ss", f"{t:.2f}", "-i", video, "-frames", "1",
+                 "-vf", "scale=1080:-2", "-q:v", "3", dest],
+                check=True, capture_output=True)
+            urls.append("/clips/" + os.path.basename(dest))
+        except Exception:
+            continue
+    return urls
+
+
+# ---------------------------------------------------- post-render finalizer
+def finalize(wav: str, texts: str, src_title: str, peak_score: float,
+             start: float, dur: float, video: str, impact_t: float,
+             out_dir: str, stem: str) -> dict:
+    """Called by pipeline after captions+render. Returns rich clip info."""
+    db = audio_db(wav)
+    cat, tags = classify(texts)
+    viral, reasons = viral_score(db, 0.0, dur, peak_score, texts)
+    meta = make_metadata(texts, src_title, cat)
+    thumbs = thumbnails(video, impact_t, out_dir, stem)
+
+    # ---- clip understanding (CUO v1) ----
+    try:
+        from . import understand
+        cuo_video = video if video and os.path.isfile(video) else None
+        cuo = understand.build(cuo_video, wav, texts, start)
+        with open(os.path.join(out_dir, f"{stem}.cuo.json"), "w",
+                  encoding="utf-8") as _f:
+            json.dump(cuo, _f, indent=1)
+        reasons.append("🧠 " + understand.summarize(cuo))
+    except Exception:
+        pass
+
+    return {"viral": viral, "reasons": reasons, "category": cat,
+            "tags": tags, "meta": meta, "thumb": thumbs[0] if thumbs else "",
+            "thumbs": thumbs}
