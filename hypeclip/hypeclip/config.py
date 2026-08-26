@@ -18,7 +18,7 @@ APP_TAGLINE = "AI stream clipping studio"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HC_PORT", "8500"))
 
-# -------------------------------------------------------------- licensing ---
+# ------------------------------------------------------------- licensing ---
 # Owner unlocks permanently; everyone else gets the local trial handled by
 # hypeclip/licensing.py. Nothing here forces activation.
 LICENSE_REQUIRED = False
@@ -36,8 +36,7 @@ def data_dir() -> Path:
     d = base_dir() / "Data"
     d.mkdir(parents=True, exist_ok=True)
     return d
-    
-APP_VERSION = "3.9.5"
+
 
 DATA_DIR = data_dir()
 WORK_DIR = DATA_DIR / "work"
@@ -55,7 +54,7 @@ for _d in (WORK_DIR, OUTPUT_DIR, BIN_DIR, CACHE_DIR):
 os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-# ------------------------------------------------------------ defaults ---
+# -------------------------------------------------------------- defaults ---
 DEFAULT_SETTINGS = {
     # general
     "clip_count": 20,
@@ -65,17 +64,17 @@ DEFAULT_SETTINGS = {
     "language": "en",
     "whisper_model": "small",
     "device": os.environ.get("HC_DEVICE", "auto"),
-    # export format (defaults requested earlier: 1080p60 9:16)
+    # export format
     "width": 1080,
     "height": 1920,
     "fps": 60,
     "format": "mp4",
-    # toggles (defaults requested earlier)
+    # toggles
     "captions_on": True,
     "caption_style": "karaoke",
     "skip_render": False,
     "ai_enhance": False,
-    "enhance_level": "light",       # "light" | "heavy"
+    "enhance_level": "light",
     "sfx_enabled": True,
     "sfx_volume": 0.8,
     "music_volume": 0.35,
@@ -89,7 +88,7 @@ FEATURE_FLAGS = {
     "critic_pass": True,
 }
 
-UPDATER_REPO_HINT = ""   # optional: "user/repo"; empty means autodetect
+UPDATER_REPO_HINT = ""
 
 # ------------------------------------------------------ tolerant fallback ---
 def _fallback(name: str):
@@ -105,7 +104,7 @@ def _fallback(name: str):
     if low == "port":
         return PORT
     if "url" in low or "repo" in low or "token" in low or "key" in low:
-        return UPDATER_REPO_HINT if ("repo" in low or "url" in low) else ""
+        return UPDATER_REPO_HINT
     if "required" in low or "strict" in low:
         return False
     if "path" in low or "dir" in low:
