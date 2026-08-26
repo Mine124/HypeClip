@@ -36,7 +36,8 @@ def data_dir() -> Path:
     d = base_dir() / "Data"
     d.mkdir(parents=True, exist_ok=True)
     return d
-
+    
+APP_VERSION = "3.9.5"
 
 DATA_DIR = data_dir()
 WORK_DIR = DATA_DIR / "work"
