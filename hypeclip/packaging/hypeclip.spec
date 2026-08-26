@@ -40,7 +40,7 @@ for mod in REQUIRED_MODULES:
             f"Fix the file before building.")
 
 print(f"[spec] all {len(REQUIRED_MODULES)} app modules present and "
-      f"compile-clean ✓")
+      f"compile-clean [OK]")
 
 datas = [
     (os.path.join(PROJECT, "web"), "web"),
