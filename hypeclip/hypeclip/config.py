@@ -1,73 +1,125 @@
-name: Build Portable
-on:
-  push:
-    branches: [main, master]
-  workflow_dispatch: {}
+"""HypeClip central configuration. Pure ASCII, no external dependencies.
 
-permissions:
-  contents: write
+Everything the pipeline needs: app identity, portable paths, default
+settings, feature flags. Safe fallbacks for any module importing a
+name that did not exist in older versions.
+"""
+from __future__ import annotations
 
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
+import os
+import sys
+from pathlib import Path
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+# ------------------------------------------------------------------ app ---
+APP_NAME = "HypeClip Studio"
+APP_VERSION = "3.9.5"
+APP_TAGLINE = "AI stream clipping studio"
 
-      - id: loc
-        name: Locate project + read version
-        shell: pwsh
-        run: |
-          $f = Get-ChildItem -Recurse -Filter run_app.py |
-                 Where-Object { $_.FullName -notmatch '\\(\.|_)' } |
-                 Select-Object -First 1
-          if (-not $f) {
-            Write-Host "::error::run_app.py not found - did the project files get uploaded?"
-            exit 1
-          }
-          $root = $f.Directory.FullName
-          Write-Host "Project root: $root"
-          "root=$root" >> $env:GITHUB_OUTPUT
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("HC_PORT", "8500"))
 
-          $cfg = Join-Path $root 'hypeclip\config.py'
-          if (-not (Test-Path $cfg)) {
-            Write-Host "::error::hypeclip/config.py is MISSING in the repo"
-            exit 1
-          }
-          $m = Select-String -Path $cfg -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
-          if (-not $m) {
-            Write-Host "::error::could not find APP_VERSION = \"x.y.z\" in hypeclip/config.py"
-            Write-Host "--- first 10 lines of config.py ---"
-            Get-Content $cfg -TotalCount 10 | ForEach-Object { Write-Host $_ }
-            exit 1
-          }
-          $v = $m.Matches[0].Groups[1].Value
-          Write-Host "Building v$v"
-          "version=$v" >> $env:GITHUB_OUTPUT
+# -------------------------------------------------------------- licensing ---
+# Owner unlocks permanently; everyone else gets the local trial handled by
+# hypeclip/licensing.py. Nothing here forces activation.
+LICENSE_REQUIRED = False
+TRIAL_DAYS = 30
 
-      - name: Build portable ZIP
-        shell: pwsh
-        run: |
-          Set-Location "${{ steps.loc.outputs.root }}"
-          powershell -ExecutionPolicy Bypass -File packaging\build_portable.ps1
+# ----------------------------------------------------------------- paths ---
+def base_dir() -> Path:
+    """Folder the frozen exe lives in (or project root when running raw)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
-      - name: Attach ZIP to this run
-        uses: actions/upload-artifact@v4
-        with:
-          name: HypeClip-Portable-${{ steps.loc.outputs.version }}
-          path: ${{ steps.loc.outputs.root }}/dist/HypeClip-Portable-*.zip
-          compression-level: 0
-          if-no-files-found: error
 
-      - name: Publish as a Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.loc.outputs.version }}
-          name: HypeClip Portable v${{ steps.loc.outputs.version }}
-          body: |
-            Portable edition - extract the ZIP anywhere and double-click HypeClip.exe.
-            First SmartScreen warning? More info -> Run anyway.
-          files: ${{ steps.loc.outputs.root }}/dist/HypeClip-Portable-*.zip
+def data_dir() -> Path:
+    d = base_dir() / "Data"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+DATA_DIR = data_dir()
+WORK_DIR = DATA_DIR / "work"
+OUTPUT_DIR = DATA_DIR / "clips"
+BIN_DIR = DATA_DIR / "bin"
+CACHE_DIR = DATA_DIR / "cache"
+
+for _d in (WORK_DIR, OUTPUT_DIR, BIN_DIR, CACHE_DIR):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+# Hugging Face models land inside our portable cache automatically.
+os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+# ------------------------------------------------------------ defaults ---
+DEFAULT_SETTINGS = {
+    # general
+    "clip_count": 20,
+    "clip_length": 90,
+    "min_clip_length": 25,
+    "max_clip_length": 180,
+    "language": "en",
+    "whisper_model": "small",
+    "device": os.environ.get("HC_DEVICE", "auto"),
+    # export format (defaults requested earlier: 1080p60 9:16)
+    "width": 1080,
+    "height": 1920,
+    "fps": 60,
+    "format": "mp4",
+    # toggles (defaults requested earlier)
+    "captions_on": True,
+    "caption_style": "karaoke",
+    "skip_render": False,
+    "ai_enhance": False,
+    "enhance_level": "light",       # "light" | "heavy"
+    "sfx_enabled": True,
+    "sfx_volume": 0.8,
+    "music_volume": 0.35,
+    "subscribe_sticker": True,
+    "face_tracking": True,
+}
+
+FEATURE_FLAGS = {
+    "editor_page": True,
+    "attention_director": True,
+    "critic_pass": True,
+}
+
+UPDATER_REPO_HINT = ""   # optional: "user/repo"; empty means autodetect
+
+# ------------------------------------------------------ tolerant fallback ---
+def _fallback(name: str):
+    """Return something sane for unknown legacy imports instead of crashing."""
+    sys.stderr.write("[config] fallback import: %s\n" % name)
+    low = name.lower()
+    if low in ("settings", "prefs", "preferences", "defaults"):
+        return DEFAULT_SETTINGS
+    if low in ("feature_flags", "flags"):
+        return FEATURE_FLAGS
+    if "version" in low:
+        return APP_VERSION
+    if low == "port":
+        return PORT
+    if "url" in low or "repo" in low or "token" in low or "key" in low:
+        return UPDATER_REPO_HINT if ("repo" in low or "url" in low) else ""
+    if "required" in low or "strict" in low:
+        return False
+    if "path" in low or "dir" in low:
+        return DATA_DIR
+    return None
+
+
+def __getattr__(name: str):
+    return _fallback(name)
+
+
+__all__ = [
+    "APP_NAME", "APP_VERSION", "HOST", "PORT",
+    "LICENSE_REQUIRED", "TRIAL_DAYS",
+    "base_dir", "data_dir", "DATA_DIR", "WORK_DIR", "OUTPUT_DIR",
+    "BIN_DIR", "CACHE_DIR",
+    "DEFAULT_SETTINGS", "FEATURE_FLAGS", "UPDATER_REPO_HINT",
+]
