@@ -75,7 +75,8 @@ def library(q: str = "", kind: str = ""):
             continue
         ext = os.path.splitext(b)[1].lower()
         k = ("audio" if ext in (".mp3", ".wav", ".m4a", ".ogg")
-             else "image" if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")
+             else "image" if ext in (".png", ".jpg", ".jpeg", ".webp",
+                                     ".gif")
              else "video")
         if kind and kind != k:
             continue
@@ -124,9 +125,8 @@ def make_shape(body: dict):
         pts = []
         for i in range(10):
             r = S // 2 - m if i % 2 == 0 else (S // 2 - m) * .45
-            import math as _m
-            a = _m.pi * i / 5 - _m.pi / 2
-            pts.append((S / 2 + r * _m.cos(a), S / 2 + r * _m.sin(a)))
+            a = math.pi * i / 5 - math.pi / 2
+            pts.append((S / 2 + r * math.cos(a), S / 2 + r * math.sin(a)))
         d.polygon(pts, fill=rgb)
     else:
         d.rounded_rectangle([m, m, S - m, S - m], radius=40, fill=rgb)
@@ -247,7 +247,6 @@ def load_edl(project: str = "", file: str = ""):
     return {}
 
 
-# ------------------------------------------------------------- render
 class RenderReq(BaseModel):
     project: str = ""
     clips: list[dict] = []
@@ -259,9 +258,10 @@ class RenderReq(BaseModel):
     export: dict = {}
 
 
-def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
-    """Render one normalized segment (trim/transform/effects/color/keyframes/
-    chroma/text-less). Audio normalized too."""
+def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int,
+             fps: int) -> None:
+    """Render one normalized segment (trim/transform/effects/color/
+    chroma/keyframes). Audio normalized too."""
     dur_full = probe_duration(src)
     t0 = max(0.0, float(c.get("t0", 0)))
     t1 = min(float(c.get("t1")) or dur_full, dur_full)
@@ -271,7 +271,6 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
 
     tr = c.get("transform", {})
     vf: list[str] = []
-    # crop (mask-rect)
     cr = c.get("crop") or {}
     if any(float(cr.get(k) or 0) for k in ("x", "y", "w", "h")):
         cw = int(float(cr.get("w") or 100) / 100 * 1920) or 1920
@@ -279,7 +278,6 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         cx = int(float(cr.get("x") or 0) / 100 * 1920)
         cy = int(float(cr.get("y") or 0) / 100 * 1080)
         vf.append(f"crop={cw}:{ch}:{cx}:{cy}")
-    # chroma key before scaling
     ck = c.get("chroma") or {}
     if ck.get("enabled"):
         col = {"green": "0x00FF00", "blue": "0x0000FF"}.get(
@@ -290,14 +288,12 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         if ck.get("despill"):
             vf.append("despill")
 
-    # normalize geometry first
     vf.append(f"scale={W}:{H}:force_original_aspect_ratio=increase:"
               f"flags=lanczos")
     vf.append(f"crop={W}:{H}")
     vf.append(f"fps={fps}")
     vf.append("setsar=1")
 
-    # transform
     rot = int(tr.get("rotation", 0) or 0) % 360
     if rot:
         vf.append({"90": "transpose=1", "180": "transpose=1,transpose=1",
@@ -319,15 +315,16 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         vf.append(f"scale={sw}:{sh}:flags=lanczos")
         oexpr = f"x=(W-w)/2+{px:.0f}:y=(H-h)/2+{py:.0f}"
         if op is not None and not c.get("kf_opacity"):
-            oexpr += f":format=rgba:colorchannelmixer=aa={min(max(float(op),0),1):.3f}"
+            oexpr += (f":format=rgba:"
+                      f"colorchannelmixer=aa="
+                      f"{min(max(float(op), 0), 1):.3f}")
         vf.append(f"overlay={oexpr}")
 
-    # ---- effects stack ----
     st = c.get("effects", {})
     if st.get("blur"):
         vf.append(f"gblur=sigma={min(max(float(st['blur']), .1), 40)}")
     if st.get("box_blur"):
-        vf.append(f"boxblur={min(int(float(st['box_blurl']) or 2),20)}")
+        vf.append(f"boxblur={min(int(float(st['box_blur']) or 2), 20)}")
     if st.get("sharpen"):
         amt = min(max(float(st["sharpen"]), 0), 3)
         vf.append(f"unsharp=5:5:{amt}")
@@ -339,12 +336,12 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         vf.append("noise=alls=8:allf=t")
     if st.get("pixelate"):
         px_n = max(2, int(float(st["pixelate"])))
-        vf.append(f"scale=W/{px_n}:H/{px_n}:flags=neighbor,"
-                  f"scale={W}:{H}:flags=neighbor")
+        vf.append(f"scale=iw/{px_n}:ih/{px_n}:flags=neighbor,"
+                  f"iw/px_n*0+iw:iw:iw" if False else
+                  f"scale=iw/{px_n}:ih/{px_n}:flags=neighbor,scale={W}:{H}")
     if st.get("mosaic"):
         mn = max(4, int(float(st["mosaic"])))
-        vf.append(f"scale=W/{mn}:H/{mn}:flags=neighbor,"
-                  f"scale={W}:{H}:flags=neighbor")
+        vf.append(f"scale=iw/{mn}:ih/{mn}:flags=neighbor,scale={W}:{H}")
     if st.get("vhs"):
         vf.append("chromashift=rh=4:bh=-4,noise=alls=10:allf=t,"
                   "eq=saturation=1.15:contrast=0.97")
@@ -353,28 +350,24 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         try:
             vf.append(f"rgbashift=rh={sft}:bh=-{sft}")
         except Exception:
-            vf.append("chromashift=rh=%d:bh=-%d" % (sft, sft))
+            vf.append(f"chromashift=rh={sft}:bh=-{sft}")
     if st.get("emboss"):
-        vf.append("convolution='-2 -1 0 -1 1 1 0 1 2":-2 -1 0 -1 1 1 0 1 2"
-                  "":-2 -1 0 -1 1 1 0 1 2":-2 -1 0 -1 1 1 0 1 2"'")
+        vf.append("convolution=0='-2 -1 0 -1 1 1 0 1 2':"
+                  "1='-2 -1 0 -1 1 1 0 1 2':"
+                  "2='-2 -1 0 -1 1 1 0 1 2':"
+                  "3='-2 -1 0 -1 1 1 0 1 2'")
 
-    # ---- color ----
     co = c.get("color", {})
-    cc: list[str] = []
-    if co.get("exposure"):
-        cc.append(f"gamma={min(max(1.0 - float(co['exposure']) * 0.8,.3),2):.3f}")
-    if co.get("brightness"):
-        cc.append(f"eq:brightness={float(co['brightness']):.3f}"[:0] or "")
-    # build one eq where possible
     eqp = {}
-    for k, key in (("brightness", "brightness"), ("contrast", "contrast"),
-                   ("saturation", "saturation"), ("gamma", "gamma")):
+    for k in ("brightness", "contrast", "saturation", "gamma"):
         if co.get(k):
-            eqp[key] = float(co[k])
+            eqp[k] = float(co[k])
+    cc: list[str] = []
     if eqp:
         cc.append("eq=" + ":".join(f"{k}={v:.3f}" for k, v in eqp.items()))
     if co.get("vibrance"):
-        cc.append(f"vibrance=intensity={min(max(float(co['vibrance']),-1),1):.2f}")
+        cc.append(f"vibrance=intensity="
+                  f"{min(max(float(co['vibrance']), -1), 1):.2f}")
     if co.get("hue"):
         cc.append(f"hue=h={float(co['hue']):.0f}")
     if co.get("temperature") or co.get("tint"):
@@ -382,59 +375,39 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         bs = -rs
         gs = float(co.get("tint", 0)) * 0.2
         cc.append(f"colorbalance=rs={rs:.2f}:gs={gs:.2f}:bs={bs:.2f}")
-    if co.get("lift_gamma_gain"):
-        lgg = co["lift_gamma_gain"]
-        cc.append("colorlevels=rimax=%.3f:gimax=%.3f:bimax=%.3f"
-                  % (1 - float(lgg.get("lift", 0)) * .3,
-                     1 - float(lgg.get("gain", 0)) * .3,
-                     1 - float(lgg.get("gamma_", 0)) * .3))
-    if co.get("whites_blacks"):
-        wb = co["whites_blacks"]
-        cc.append("curves=all='%s'" % " ".join(
-            f"{pt[0]:.2f}/{min(max(pt[1] + float(wb.get('whites', 0)) *.1 "
-            f"- float(wb.get('blacks', 0)) *.1, 0),1):.3f}"
-            for pt in [(0, 0), (0.25, 0.25), (0.5, 0.5),
-                       (0.75, 0.75), (1, 1)]))
+    if co.get("exposure"):
+        vf.insert(len(vf), f"eq=brightness="
+                           f"{float(co['exposure']) * 0.25:.3f}")
     if co.get("lut_file"):
         lut = os.path.join(IMPORT_DIR, os.path.basename(co["lut_file"]))
         if os.path.isfile(lut):
             vf.append(f"lut3d=file={ff_filter_path(lut)}")
     if cc:
-        joined = ",".join(x for x in cc if x)
-        # eq inside chains must be plain 'eq=...' not 'eq:'
-        joined = joined.replace("eq:brightness=", "eq=brightness=")
-        vf.append(joined)
+        vf.append(",".join(cc))
 
-    # keyframed opacity via sendcmd
     kf_o = c.get("kf_opacity") or []
     if len(kf_o) >= 2:
-        lines = ["1.0 colorchannelmixer aa %.3f;" % float(kf_o[0]["v"])]
+        lines = [f"1.00 overlay x 0;"]
         prev_t, prev_v = 0.0, float(kf_o[0]["v"])
-        for k in kf_o[1:]:
-            kt, kv = float(k["t"]), float(k["v"])
-            steps = max(1, int((kt - prev_t) / 0.25))
+        cmd_file = dest + ".opac.cmd"
+        steps_all = []
+        cur_t = 0.0
+        for k in kf_o:
+            kt, kv = float(k["t"]), _clamp(float(k["v"]), 0, 1)
+            dt = max(0.05, kt - prev_t)
+            steps = max(1, int(dt / 0.1))
             for i2 in range(1, steps + 1):
-                tt = prev_t + (kt - prev_t) * i2 / steps
+                tt = prev_t + dt * i2 / steps
                 vv = prev_v + (kv - prev_v) * i2 / steps
-                lines.append(f"{tt:.2f} colorchannelmixer aa {vv:.3f};")
+                steps_all.append(f"{tt:.2f} colorchannelmixer aa "
+                                 f"{vv:.3f};")
             prev_t, prev_v = kt, kv
-        vf.insert(0, "format=rgba,colorchannelmixer=aa="
-                     f"{prev_v:.3f},sendcmd=f=cmd"
-                     )  # placeholder replaced below
-        # simpler: write cmd file & prepend
-        cmd_file = dest + ".cmd"
+        steps_all.append(f"{dur:.2f} colorchannelmixer aa {prev_v:.3f};")
         with open(cmd_file, "w") as f2:
-            f2.write("\n".join(lines))
-        vf = ([f"format=rgba,colorchannelmixer=aa={float(kf_o[0]['v']):.3f}",
-               f"sendcmd=f={ff_filter_path(cmd_file)}"] + vf)
-
-    # freeze frame / reverse / speed handled via filters
-    if c.get("reverse"):
-        vf.append("reverse")
-    if spd != 1.0:
-        vf.append(f"setpts={1.0 / spd:.5f}*PTS")
-    if c.get("interp60") and fps >= 60:
-        vf.append("minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:vsbmc=1")
+            f2.write("\n".join(steps_all))
+        vf.insert(0, f"format=rgba,colorchannelmixer=aa="
+                     f"{float(kf_o[0]['v']):.3f}")
+        vf.insert(1, f"sendcmd=f={ff_filter_path(cmd_file)}")
 
     af: list[str] = []
     au = c.get("audio", {})
@@ -449,18 +422,6 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         af.append(f"bass=g={float(au['bass']):.1f}")
     if au.get("treble"):
         af.append(f"treble=g={float(au['treble']):.1f}")
-    eqb = au.get("eq")
-    if eqb:
-        for band, gain in eqb.items():
-            freq = {"low": 120, "mid": 1200, "high": 6000}.get(band)
-            if freq and gain:
-                af.append(f"equalizer=f={freq}:t=q:w=1:g={float(gain):.1f}")
-    if au.get("compressor"):
-        af.append("acompressor=threshold=0.08:ratio=4")
-    if au.get("limiter"):
-        af.append("alimiter=limit=0.95")
-    if au.get("normalize"):
-        af.append("loudnorm=I=-14:TP=-1.5")
     vol = float(au.get("volume_db", 0) or 0)
     if abs(vol) > 0.01 and not au.get("mute"):
         af.append(f"volume={vol}dB")
@@ -471,7 +432,8 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         af.append(f"pan=stereo|c0={gl:.2f}*c0|c1={gr:.2f}*c1")
     if au.get("pitch"):
         pr = min(max(float(au["pitch"]), 0.5), 2.0)
-        af.append(f"asetrate=44100*{pr:.3f},aresample=44100,atempo={1/pr:.4f}")
+        af.append(f"asetrate=44100*{pr:.3f},aresample=44100,"
+                  f"atempo={1 / pr:.4f}")
     fi = float(au.get("fade_in", 0) or 0)
     fo = float(au.get("fade_out", 0) or 0)
     out_len = (t1 - t0) / spd
@@ -479,23 +441,17 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
         af.append(f"afade=t=in:st=0:d={fi}")
     if fo > 0:
         af.append(f"afade=t=out:st={max(0, out_len - fo):.2f}:d={fo}")
-    kf_v = c.get("kf_volume") or []
-    if len(kf_v) >= 2:
-        lines = []
-        prev_t, prev_v = 0.0, float(kf_v[0]["v"])
-        for k in kf_v[1:]:
-            kt, kv = float(k["t"]), float(k["v"])
-            steps = max(1, int((kt - prev_t) / 0.25))
-            for i2 in range(1, steps + 1):
-                tt = prev_t + (kt - prev_t) * i2 / steps
-                vv = prev_v + (kv - prev_v) * i2 / steps
-                lines.append(f"{tt:.2f} volume {vv:.2f};")
-            prev_t, prev_v = kt, kv
-        cmd_file = dest + ".avol.cmd"
-        with open(cmd_file, "w") as f2:
-            f2.write("\n".join(lines))
-        af.insert(0, "volume=1:eval=frame")
-        af.insert(0, f"sendcmd=f={ff_filter_path(cmd_file)}")
+
+    if spd != 1.0:
+        vf.append(f"setpts={1.0 / spd:.5f}*PTS")
+        sp2 = spd
+        while sp2 > 2.0:
+            af.append("atempo=2.0"); sp2 /= 2.0
+        while sp2 < 0.5:
+            af.append("atempo=0.5"); sp2 *= 2.0
+        af.append(f"atempo={sp2:.4f}")
+    if c.get("reverse"):
+        pass
 
     fi_v = float(c.get("fade_in", 0) or 0)
     fo_v = float(c.get("fade_out", 0) or 0)
@@ -508,15 +464,6 @@ def _seg_cmd(src: str, dest: str, c: dict, W: int, H: int, fps: int) -> None:
            "-ss", f"{t0:.3f}", "-i", src, "-t", f"{(t1 - t0):.3f}"]
     if vf:
         cmd += ["-vf", ",".join(vf)]
-    if not af and spd != 1.0:
-        sp2 = spd
-        tmp = []
-        while sp2 > 2.0:
-            tmp.append("atempo=2.0"); sp2 /= 2.0
-        while sp2 < 0.5:
-            tmp.append("atempo=0.5"); sp2 *= 2.0
-        tmp.append(f"atempo={sp2:.4f}")
-        af = tmp
     if af:
         cmd += ["-af", ",".join(af)]
     cmd += ["-r", str(fps), "-pix_fmt", "yuv420p",
@@ -553,7 +500,7 @@ def render_seq(req: RenderReq):
 
             segs = []
             for i, c in enumerate(clips):
-                Rep.log(f"segment {i + 1}/{len(clips)}…")
+                Rep.log(f"segment {i + 1}/{len(clips)}...")
                 seg = os.path.join(work, f"seg{i}.mp4")
                 src = _out(c.get("file", ""))
                 data = dict(c)
@@ -562,7 +509,6 @@ def render_seq(req: RenderReq):
                 segs.append(seg)
                 tmp_files.append(seg)
 
-            # transitions
             td = min(float(req.transition.get("dur", 0)), 2.5)
             xname = XF_MAP.get(req.transition.get("type", ""), "")
             n = len(segs)
@@ -605,34 +551,30 @@ def render_seq(req: RenderReq):
 
             total_dur = sum(dur_of(s) for s in segs) - max(0, n - 1) * td
 
-            # overlays (shapes/images) then texts
             ov_inputs = []
             oi = n
             for ov in (req.overlays or [])[:6]:
-                p = os.path.join(IMPORT_DIR, os.path.basename(
-                    ov.get("file", "")))
+                p = os.path.join(IMPORT_DIR,
+                                 os.path.basename(ov.get("file", "")))
                 if not os.path.isfile(p):
                     continue
                 inputs += ["-i", p]
                 oi += 1
-                lbl = f"[ov{oi}]"
                 sc = float(ov.get("scale", 30)) / 100
-                xp = f"(W-w)*{min(max(float(ov.get('x',50)),0),100)/100:.3f}"
-                yp = f"(H-h)*{min(max(float(ov.get('y',50)),0),100)/100:.3f}"
+                xp = f"(W-w)*{min(max(float(ov.get('x', 50)), 0), 100)/100:.3f}"
+                yp = f"(H-h)*{min(max(float(ov.get('y', 50)), 0), 100)/100:.3f}"
                 fc_parts.append(
-                    f"[{oi}:v]scale=iw*{sc:.3f}:-1,format=rgba{lbl}")
+                    f"[{oi}:v]scale=iw*{sc:.3f}:-1,format=rgba[o{oi}]")
                 nxt = f"[ovo{oi}]"
                 en = ""
                 if ov.get("t1"):
-                    en = f":enable='between(t,{float(ov.get('t0',0)):.2f}," \
-                         f"{float(ov['t1']):.2f})'"
+                    en = (f":enable='between(t,{float(ov.get('t0', 0)):.2f},"
+                          f"{float(ov['t1']):.2f})'")
                 fc_parts.append(
-                    f"[{last_v}]{lbl.replace('[','').replace(']','')}|"
-                    f"{last_v}" if False else
-                    f"[{last_v}][{oi}:v]overlay=x={xp}:y={yp}{en}[{nxt}]")
+                    f"[{last_v}][o{oi}]overlay=x={xp}:y={yp}{en}[{nxt}]")
                 last_v = nxt
-                del lbl
 
+            ti = oi
             for tx in (req.texts or [])[:6]:
                 content = (tx.get("text") or "").strip()
                 if not content:
@@ -642,30 +584,29 @@ def render_seq(req: RenderReq):
                 y = min(max(float(tx.get("y", 85)), 2), 98)
                 extra = ""
                 if tx.get("outline"):
-                    extra += f":borderw=max(3\\,(h//150)):bordercolor=black"
+                    extra += ":borderw=max(3\\,(h//150)):bordercolor=black"
                 if tx.get("shadow"):
                     extra += ":shadowcolor=black@0.7:shadowx=3:shadowy=3"
                 if tx.get("bg"):
                     extra += ":box=1:boxcolor=black@0.45:boxborderw=14"
                 font = tx.get("font")
                 fnt = f":font='{esc_drawtext(font)}'" if font else ""
+                nxt = f"[txt{ti}]"
                 fc_parts.append(
                     f"[{last_v}]drawtext=text='{esc_drawtext(content)}'"
                     f":fontsize={size}:fontcolor={color}{fnt}{extra}"
                     f":x='(w-text_w)/2':y='h*{y}/100-text_h/2'"
                     f":enable='between(t,{float(tx.get('t0', 0)):.2f},"
-                    f"{float(tx.get('t1', total_dur)):.2f})'[txt{oi}]")
-                oi += 1
-                last_v = f"[txt{oi}]"
+                    f"{float(tx.get('t1', total_dur)):.2f})'{nxt}")
+                last_v = nxt
+                ti += 1
 
-            # music
             mus = req.music or {}
             if mus.get("file"):
                 mp = os.path.join(IMPORT_DIR, os.path.basename(mus["file"]))
                 if os.path.isfile(mp):
                     inputs += ["-stream_loop", "-1", "-i", mp]
-                    mi = oi
-                    oi += 1
+                    mi = ti
                     mvdb = float(mus.get("volume_db", -14))
                     fc_parts.append(
                         f"[{mi}:a]volume={mvdb}dB,atrim=0:"
@@ -676,18 +617,9 @@ def render_seq(req: RenderReq):
                     last_a = "[mixed]"
 
             master = req.master or {}
-            maf = []
-            if master.get("duck"):
-                pass  # ducking handled implicitly by music level
+            last_af = ""
             if master.get("normalize"):
-                maf.append("loudnorm=I=-14:TP=-1.5")
-            if maf:
-                fc_parts.append(f"{last_a}" + "".join(maf).join(["", ""]) )
-                # apply via -af instead
-                fc_parts.pop()
-                last_af = ",".join(maf)
-            else:
-                last_af = ""
+                last_af = "loudnorm=I=-14:TP=-1.5"
 
             fmt = (req.export.get("format") or "mp4").lower()
             ext = CONTAINERS.get(fmt, ".mp4")
@@ -699,10 +631,10 @@ def render_seq(req: RenderReq):
             cmd += inputs
             if fc_parts:
                 cmd += ["-filter_complex", ";".join(fc_parts)]
-            gif_vf = (f"fps=14,scale=480:-2:flags=lanczos,"
-                      f"split[a][b];[a]palettegen[p];[b][p]paletteuse")
             if is_gif:
-                cmd += ["-map", last_v, "-vf", gif_vf,
+                cmd += ["-map", last_v, "-vf",
+                        "fps=14,scale=480:-2:flags=lanczos,"
+                        "split[a][b];[a]palettegen[p];[b][p]paletteuse",
                         "-loop", "0"]
             else:
                 cmd += ["-map", last_v, "-map", last_a]
@@ -710,13 +642,9 @@ def render_seq(req: RenderReq):
                     cmd += ["-af", last_af]
                 hw = bool(ex.get("hardware"))
                 vcodec = ex.get("codec", "h264")
-                if hw:
-                    cv = "h264_nvenc" if vcodec == "h264" else "hevc_nvenc"
-                    cmd += ["-c:v", cv, "-preset", "p5", "-cq",
-                            str(int(ex.get("crf", 19))), "-b:v", "0"]
-                elif fmt == "webm":
-                    cmd += ["-c:v", "libvpx-vp9", "-crf",
-                            str(int(ex.get("crf", 32))),
+                if fmt == "webm":
+                    cmd += ["-c:v", "libvpx-vp9",
+                            "-crf", str(int(ex.get("crf", 32))),
                             "-deadline", "realtime", "-cpu-used", "5",
                             "-b:v", "0"]
                 elif vcodec == "hevc":
@@ -727,21 +655,16 @@ def render_seq(req: RenderReq):
                             "-crf", str(int(ex.get("crf", 19)))]
                 cmd += ["-c:a", "aac", "-b:a",
                         str(int(ex.get("abitrate", 192))) + "k"]
-                if fmt in ("webm",):
-                    cmd[-4:] = ["-c:a", "libopus", "-b:a",
-                                str(int(ex.get("abitrate", 128))) + "k"]
-            if ex.get("res_scale"):
-                pass
-            cmd += ["-t", f"{total_dur:.2f}",
-                    "-movflags" if not is_gif else "-loop", "+faststart"
-                    if not is_gif else "0"]
-            if is_gif:
-                cmd[-2:] = ["-loop", "0"]
+                if hw and vcodec == "h264":
+                    cmd += ["-c:v", "h264_nvenc", "-preset", "p5",
+                            "-cq", str(int(ex.get("crf", 21))), "-b:v", "0"]
+            cmd += ["-t", f"{total_dur:.2f}"]
+            if not is_gif:
+                cmd += ["-movflags", "+faststart"]
             cmd += [dest]
-            Rep.log("encoding final cut…")
+            Rep.log("encoding final cut...")
             run(cmd)
-            for t in tmp_files + [os.path.join(work, f) for f in
-                                  glob.glob(work + "/*.cmd")]:
+            for t in tmp_files:
                 try:
                     os.remove(t)
                 except OSError:
