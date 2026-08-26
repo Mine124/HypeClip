@@ -1,7 +1,7 @@
 """Clip Understanding v1 (heuristic CUO). Builds a structured
-ClipUnderstanding object from audio + vision signals. LLM-upgradeable:
-when understand_llm lands it replaces build() internals; schema stays."""
+ClipUnderstanding object from audio + vision signals."""
 from __future__ import annotations
+import os
 
 import numpy as np
 
@@ -80,7 +80,6 @@ def _arc(db, step=2.0):
 
 
 def _visual_counts(video, start, dur, max_n=8):
-    """Uses Eagle-Eye engine WITH labels (single pass)."""
     counts, W, H = {}, 0, 0
     try:
         from .tracker import ENG
@@ -155,7 +154,7 @@ def _content_type(counts, texts=""):
 
 def build(media_video: str | None, wav: str, texts: str = "",
           start_offset: float = 0.0) -> dict:
-    """Returns the CUO dict. Never raises."""
+    """Returns the CUO dict. Never raises internally past audio check."""
     cuo = {"schema": "cuo.v1", "lexical": False,
            "content_type": "generic", "primary_subject": "",
            "events": [], "emotion_timeline": [], "attention_timeline": [],
@@ -171,6 +170,7 @@ def build(media_video: str | None, wav: str, texts: str = "",
 
         emo = _arc(db)
         cuo["emotion_timeline"] = emo
+        dur = db.size
         if emo:
             peak = max(emo, key=lambda e: e["arousal"])
             cuo["peak"] = peak["t"]
@@ -179,11 +179,11 @@ def build(media_video: str | None, wav: str, texts: str = "",
 
         tr = _transients(db)
         sil = _silences(db)
-        for tr_ in sorted(tr, key=lambda x: -x["strength"])[:5]:
-            ev = {"t": tr_["t"], "kind": "impact",
-                  "importance": _clamp(tr_["strength"] / 14, 0, 1),
-                  "note": f"+{tr_['strength']:.0f}dB"}
-            cuo["events"].append(ev)
+        for t_ in sorted(tr, key=lambda x: -x["strength"])[:5]:
+            cuo["events"].append({"t": t_["t"], "kind": "impact",
+                                  "importance": _clamp(t_["strength"] / 14,
+                                                       0, 1),
+                                  "note": f"+{t_['strength']:.0f}dB"})
         for a, b in sil:
             nxt_i = min(int(b) + 1, db.size - 1)
             rise = db[nxt_i] - db[int(a)]
@@ -196,22 +196,20 @@ def build(media_video: str | None, wav: str, texts: str = "",
 
         if media_video and os.path.isfile(media_video):
             cuo["visual_counts"] = _visual_counts(
-                media_video, start_offset, min(dur := db.size, 120.0))
+                media_video, start_offset, min(dur, 120.0))
             cuo["content_type"] = _content_type(
                 cuo["visual_counts"], texts)
 
         pk = cuo["peak"] if cuo["peak"] is not None else dur * 0.4
+        arc_label = emo[0]["label"] if emo else "calm"
         cuo["why_interesting"] = (
-            f"Arousal climbs from {emo[0]['label']} to a {emo and 'peak'} "
-            f"around {pk:.0f}s with {len(tr)} hard audio hits; "
-            f"content reads as {cuo['content_type'].replace('_', ' ')}.")
+            f"Arousal climbs from {arc_label} to a peak around "
+            f"{pk:.0f}s with {len(tr)} hard audio hits; content reads as "
+            f"{cuo['content_type'].replace('_', ' ')}.")
         cuo["lexical"] = bool(texts)
     except Exception as e:  # noqa: BLE001
         cuo["warnings"].append(str(e)[:160])
     return cuo
-
-
-import os  # noqa: E402  (kept late-safe for tooling)
 
 
 def summarize(cuo: dict) -> str:
@@ -220,5 +218,5 @@ def summarize(cuo: dict) -> str:
     tl = " → ".join(f"{e['t']:.0f}s:{e['label']}"
                     for e in cuo.get("emotion_timeline", [])[:6])
     return (f"[{cuo['content_type']}] arc: {tl} · "
-            f"{len(cuo['events'])} events · "
-            f"{len(cuo['protected_beats'])} protected beats")
+            f"{len(cuo.get('events', []))} events · "
+            f"{len(cuo.get('protected_beats', []))} protected beats")
