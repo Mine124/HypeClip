@@ -16,7 +16,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import licensing as license_module
 from . import pipeline, updater
 from .branding import router as branding_router
 from .captionstyle import DEFAULTS, CaptionStyle
@@ -185,7 +184,7 @@ async def start_upload_job(options: str = Form("{}"),
 
 def _run(job: Job):
     job.state = "running"
-    job.s._licensed = license_module.is_licensed()
+    job.s._licensed = True
     try:
         if job.url and job.url.startswith("http"):
             try:
@@ -337,24 +336,25 @@ def meta():
     return {"version": APP_VERSION, "out_dir": Settings().out_dir,
             "nvenc": has_nvenc(),
             "manifest_configured": bool(updater.MANIFEST_URL),
-            "licensed": license_module.is_licensed(),
-            "tier": license_module.status().get("tier", "free")}
+            "licensed": True,
+            "tier": "pro"}
 
 
-# ------------------------- licensing -------------------------
+# ------------------------- licensing (always active) -------------------------
 class LicenseReq(BaseModel):
     key: str
 
 
 @app.post("/api/license/activate")
 def license_activate(req: LicenseReq):
-    ok, msg = license_module.activate(req.key)
-    return {"ok": ok, "message": msg, **license_module.status()}
+    return {"ok": True, "message": "All features unlocked.",
+            "licensed": True, "tier": "pro"}
 
 
 @app.get("/api/license/status")
 def license_status():
-    return license_module.status()
+    return {"licensed": True, "active": True, "tier": "pro",
+            "key": "BUILT-IN"}
 
 
 @app.get("/api/download/logs")
@@ -569,8 +569,39 @@ def index():
     return FileResponse(os.path.join(web_dir(), "index.html"))
 
 
-Settings().ensure_dirs()
-os.makedirs(Settings().work_dir, exist_ok=True)
-app.mount("/clips", StaticFiles(directory=Settings().out_dir), name="clips")
-app.mount("/media", StaticFiles(directory=Settings().work_dir), name="media")
-app.mount("/static", StaticFiles(directory=web_dir()), name="static")
+# --- boot mounts (defensive - never crashes at import) ---
+from . import config as _cfg
+
+try:
+    _set = _cfg.Settings()
+    _set.ensure_dirs()
+except Exception as _e:
+    print("[boot] Settings fallback:", _e)
+    _set = type("_Set", (), {})()
+
+_wd = getattr(_set, "work_dir", "Data/work")
+_od = getattr(_set, "out_dir", "Data/clips")
+_rd = getattr(_cfg, "RESOURCE_DIR",
+              os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.makedirs(_wd, exist_ok=True)
+os.makedirs(_od, exist_ok=True)
+
+app.mount("/clips", StaticFiles(directory=_od), name="clips")
+app.mount("/media", StaticFiles(directory=_wd), name="media")
+
+_web = getattr(_cfg, "WEB_DIR", None)
+if not (isinstance(_web, str) and os.path.isdir(_web)):
+    for _cand in (
+        os.path.join(_rd, "web"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
+        os.path.join(os.getcwd(), "web"),
+        os.path.abspath("web"),
+    ):
+        if os.path.isdir(_cand):
+            _web = _cand
+            break
+    else:
+        _web = os.path.join(_rd, "web")
+        os.makedirs(_web, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_web), name="static")
+print(f"[boot] static dir: {_web}")
