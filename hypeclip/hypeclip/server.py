@@ -12,10 +12,11 @@ import urllib.parse
 import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import licensing as license_module
 from . import pipeline, updater
 from .branding import router as branding_router
 from .captionstyle import DEFAULTS, CaptionStyle
@@ -32,6 +33,7 @@ LAST_OPTS_PATH = os.path.join(DATA_DIR, "last_options.json")
 PRESET_DIR = os.path.join(DATA_DIR, "presets")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 _DL: dict = {"state": "idle", "frac": 0.0, "error": None, "path": None}
+_REVISIONS: dict = {}
 os.makedirs(PRESET_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -74,10 +76,24 @@ class Job(pipeline.Reporter):
     def progress_scan(self, f): self.scan_frac = min(float(f or 0), 1)
     def moment(self, m): self.moments.append(m)
     def set_series(self, s): self.last_series = s
-    def clip(self, c): self.clips.append(c)
+
+    def clip(self, c):
+        try:
+            from . import retention
+            retention.enrich_clip(c, self.moments,
+                                  self.series or self.last_series,
+                                  getattr(self.s, "out_dir", ""), self)
+        except Exception as e:
+            try:
+                self.log("[retention] skipped: " + str(e))
+            except Exception:
+                pass
+        self.clips.append(c)
+
     def media_ready(self, key, fname, dur):
         self.media_url = "/media/" + urllib.parse.quote(key + "/" + fname)
         self.duration = float(dur or 0)
+
     def review(self, moments, series):
         self.moments = moments
         if series:
@@ -184,7 +200,7 @@ async def start_upload_job(options: str = Form("{}"),
 
 def _run(job: Job):
     job.state = "running"
-    job.s._licensed = True
+    job.s._licensed = license_module.is_licensed()
     try:
         if job.url and job.url.startswith("http"):
             try:
@@ -287,6 +303,60 @@ def get_export(export_id: str):
             "result": ex["result"], "logs": list(ex["logs"])}
 
 
+# ------------------------- retention revisions -------------------------
+class ReviseReq(BaseModel):
+    file: str
+
+
+@app.post("/api/clip/revise")
+def clip_revise(body: ReviseReq):
+    from . import retention
+    fname = os.path.basename(body.file)
+    src = os.path.join(Settings().out_dir, fname)
+    if not os.path.isfile(src):
+        raise HTTPException(404, "clip not found")
+    rid = uuid.uuid4().hex[:10]
+    rec = {"id": rid, "state": "running", "logs": collections.deque(maxlen=80),
+           "result": None, "error": None}
+    _REVISIONS[rid] = rec
+
+    class Rep:
+        @staticmethod
+        def log(m):
+            rec["logs"].append(str(m))
+
+    moments, series = [], None
+    for j in list(jobs.values()):
+        try:
+            names = {os.path.basename(c.get("file") or c.get("name") or "")
+                     for c in (j.clips or [])}
+            if fname in names:
+                moments = j.moments or []
+                series = j.series or j.last_series
+                break
+        except Exception:
+            pass
+
+    def go():
+        try:
+            rec["result"] = retention.improve_clip(src, moments, series, Rep())
+            rec["state"] = "done"
+        except Exception as e:
+            rec["state"], rec["error"] = "error", str(e)
+            Rep.log("ERROR " + str(e))
+    threading.Thread(target=go, daemon=True).start()
+    return {"revise_id": rid}
+
+
+@app.get("/api/revise/{revise_id}")
+def get_revise(revise_id: str):
+    rec = _REVISIONS.get(revise_id)
+    if not rec:
+        raise HTTPException(404)
+    return {"id": rec["id"], "state": rec["state"], "error": rec["error"],
+            "result": rec["result"], "logs": list(rec["logs"])}
+
+
 @app.post("/api/upload")
 async def upload(kind: str, file: UploadFile = File(...)):
     s = Settings(); s.ensure_dirs()
@@ -336,25 +406,24 @@ def meta():
     return {"version": APP_VERSION, "out_dir": Settings().out_dir,
             "nvenc": has_nvenc(),
             "manifest_configured": bool(updater.MANIFEST_URL),
-            "licensed": True,
-            "tier": "pro"}
+            "licensed": license_module.is_licensed(),
+            "tier": license_module.status().get("tier", "free")}
 
 
-# ------------------------- licensing (always active) -------------------------
+# ------------------------- licensing -------------------------
 class LicenseReq(BaseModel):
     key: str
 
 
 @app.post("/api/license/activate")
 def license_activate(req: LicenseReq):
-    return {"ok": True, "message": "All features unlocked.",
-            "licensed": True, "tier": "pro"}
+    ok, msg = license_module.activate(req.key)
+    return {"ok": ok, "message": msg, **license_module.status()}
 
 
 @app.get("/api/license/status")
 def license_status():
-    return {"licensed": True, "active": True, "tier": "pro",
-            "key": "BUILT-IN"}
+    return license_module.status()
 
 
 @app.get("/api/download/logs")
@@ -566,42 +635,25 @@ app.include_router(style_router)
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(web_dir(), "index.html"))
+    p = os.path.join(web_dir(), "index.html")
+    try:
+        with open(p, encoding="utf-8") as f:
+            html = f.read()
+    except Exception:
+        return FileResponse(p)
+    tag = '<script src="/static/retention.js"></script>'
+    if "retention.js" not in html:
+        low = html.lower()
+        if "</body>" in low:
+            i = low.rindex("</body>")
+            html = html[:i] + tag + html[i:]
+        else:
+            html += tag
+    return HTMLResponse(html)
 
 
-# --- boot mounts (defensive - never crashes at import) ---
-from . import config as _cfg
-
-try:
-    _set = _cfg.Settings()
-    _set.ensure_dirs()
-except Exception as _e:
-    print("[boot] Settings fallback:", _e)
-    _set = type("_Set", (), {})()
-
-_wd = getattr(_set, "work_dir", "Data/work")
-_od = getattr(_set, "out_dir", "Data/clips")
-_rd = getattr(_cfg, "RESOURCE_DIR",
-              os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.makedirs(_wd, exist_ok=True)
-os.makedirs(_od, exist_ok=True)
-
-app.mount("/clips", StaticFiles(directory=_od), name="clips")
-app.mount("/media", StaticFiles(directory=_wd), name="media")
-
-_web = getattr(_cfg, "WEB_DIR", None)
-if not (isinstance(_web, str) and os.path.isdir(_web)):
-    for _cand in (
-        os.path.join(_rd, "web"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
-        os.path.join(os.getcwd(), "web"),
-        os.path.abspath("web"),
-    ):
-        if os.path.isdir(_cand):
-            _web = _cand
-            break
-    else:
-        _web = os.path.join(_rd, "web")
-        os.makedirs(_web, exist_ok=True)
-app.mount("/static", StaticFiles(directory=_web), name="static")
-print(f"[boot] static dir: {_web}")
+Settings().ensure_dirs()
+os.makedirs(Settings().work_dir, exist_ok=True)
+app.mount("/clips", StaticFiles(directory=Settings().out_dir), name="clips")
+app.mount("/media", StaticFiles(directory=Settings().work_dir), name="media")
+app.mount("/static", StaticFiles(directory=web_dir()), name="static")
