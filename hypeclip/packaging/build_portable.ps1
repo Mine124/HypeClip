@@ -1,5 +1,5 @@
 # ============================================================
-#  HypeClip portable builder  (full replace - v2, fixes PyInstaller PATH)
+#  HypeClip portable builder  (full replace - v3, fixes icon path for spec)
 #  Run by CI:  powershell -ExecutionPolicy Bypass -File packaging\build_portable.ps1
 #  Output:     dist\HypeClip-Portable-<version>.zip
 # ============================================================
@@ -24,7 +24,7 @@ foreach ($d in @("build", "dist")) {
 $stage = Join-Path $root "build\stage"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# ---------- python env + deps (THE FIX) ----------
+# ---------- python env + deps ----------
 $venvPy = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) {
     Write-Host "[env] creating virtualenv"
@@ -90,7 +90,7 @@ function Get-FFmpeg($destDir) {
 }
 Get-FFmpeg (Join-Path $stage "Data\bin")
 
-# ---------- icon ----------
+# ---------- icon (generated in root, then copied where the spec expects it) ----------
 $icon = Join-Path $root "icon.ico"
 if (-not (Test-Path $icon)) {
     try {
@@ -108,6 +108,9 @@ if (-not (Test-Path $icon)) {
         Write-Host "[icon] icon.ico written"
     } catch { Write-Host "[icon] WARNING: could not generate icon: $_" }
 }
+# THE FIX: the spec resolves "icon.ico" relative to the packaging folder
+Copy-Item $icon (Join-Path $root "packaging\icon.ico") -Force
+Write-Host "[icon] copied to packaging\icon.ico for the spec"
 
 # ---------- build with PyInstaller (via venv python, no PATH needed) ----------
 $spec = Join-Path $root "packaging\hypeclip.spec"
