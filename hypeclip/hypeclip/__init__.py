@@ -1,13 +1,15 @@
 """HypeClip package bootstrap.
 
-Installs a YouTube bot-check auto-retry for yt-dlp: when YouTube replies
-"Sign in to confirm you're not a bot", downloads transparently retry with
-Data\\cookies.txt (if present), the android_vr player client, then cookies
-from browsers installed on this PC (Chrome, Edge, Firefox, Brave, Opera,
-Vivaldi). Everything is optional and fully guarded - if anything fails the
-app behaves exactly like before.
-"""
+Installs a YouTube bot-check auto-retry for yt-dlp. When YouTube replies
+"Sign in to confirm you're not a bot", the request is retried with, in
+order: Data\\cookies.txt (if present), alternate player clients
+(android_vr, tv, ios), then cookies from browsers installed on this PC.
 
+v2 fix: yt-dlp only reads cookie options at YoutubeDL construction, so
+mutating an existing instance's params silently runs cookie-less. Each
+retry now builds a FRESH YoutubeDL with merged options. Every attempt is
+printed to the debug console so the working method is visible.
+"""
 from __future__ import annotations
 
 import os
@@ -22,6 +24,8 @@ _BOT_MARKERS = (
     "please sign in",
 )
 _BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi")
+_CLIENTS = ("android_vr", "tv", "ios")
+_GOOD: dict = {"extra": None}  # first retry method that works, reused
 
 
 def _data_dir() -> str:
@@ -52,6 +56,20 @@ def _is_bot_error(exc: BaseException) -> bool:
         return False
 
 
+def _attempts() -> list:
+    out = []
+    cf = _manual_cookiefile()
+    if cf:
+        out.append(("Data/cookies.txt", {"cookiefile": cf}))
+    for cl in _CLIENTS:
+        out.append((cl + " player client",
+                    {"extractor_args": {"youtube": {"player_client": [cl]}}}))
+    for b in _BROWSERS:
+        out.append((b + " browser cookies",
+                    {"cookiesfrombrowser": (b,)}))
+    return out
+
+
 def _install_ytdlp_fix() -> None:
     try:
         import yt_dlp
@@ -70,44 +88,41 @@ def _install_ytdlp_fix() -> None:
         except Exception as first:
             if not _is_bot_error(first):
                 raise
-            attempts = []
-            cf = _manual_cookiefile()
-            if cf:
-                attempts.append(("Data cookies.txt", {"cookiefile": cf}))
-            attempts.append(("android_vr client (no login)",
-                             {"extractor_args": {"youtube": {
-                                 "player_client": ["android_vr"]}}}))
-            attempts += [(b + " cookies",
-                          {"cookiesfrombrowser": (b, None, None, None)})
-                         for b in _BROWSERS]
             last = first
-            for label, extra in attempts:
+            cf = _manual_cookiefile()
+            print("[hypeclip] YouTube bot-check hit. cookies.txt: %s"
+                  % (cf or "NOT FOUND"), flush=True)
+            # fast path: a method that already worked this session
+            if _GOOD["extra"] is not None:
                 try:
-                    self.to_screen("[hypeclip] YouTube bot-check - "
-                                   "retrying with " + label + " ...")
-                except Exception:
-                    pass
-                saved = dict(self.params or {})
+                    print("[hypeclip] retrying with known-good method...",
+                          flush=True)
+                    opts = dict(self.params or {})
+                    opts.update(_GOOD["extra"])
+                    with yt_dlp.YoutubeDL(opts) as y2:
+                        r = orig(y2, url, *args, **kwargs)
+                        return r
+                except Exception as e:
+                    last = e
+            # full chain, fresh YoutubeDL per attempt (the actual fix)
+            for label, extra in _attempts():
                 try:
-                    self.params.update(extra)
-                    ok_params = True
-                except Exception:
-                    ok_params = False
-                try:
-                    return orig(self, url, *args, **kwargs)
+                    print("[hypeclip] YouTube bot-check - retrying with "
+                          + label + " ...", flush=True)
+                    opts = dict(self.params or {})
+                    opts.update(extra)
+                    with yt_dlp.YoutubeDL(opts) as y2:
+                        r = orig(y2, url, *args, **kwargs)
+                        _GOOD["extra"] = extra
+                        print("[hypeclip] method worked: " + label,
+                              flush=True)
+                        return r
                 except Exception as e2:
                     last = e2
                     continue
-                finally:
-                    if ok_params:
-                        try:
-                            self.params.clear()
-                            self.params.update(saved)
-                        except Exception:
-                            pass
-            tip = (" | HypeClip tip: sign in to youtube.com in Chrome, "
-                   "Edge or Firefox on this PC and retry, or put an "
-                   "exported cookies.txt into the Data folder.")
+            tip = (" | HypeClip tip: export cookies from youtube.com while "
+                   "signed in and save as Data\\cookies.txt, or try a "
+                   "different network (phone hotspot).")
             try:
                 raise type(last)(str(last) + tip)
             except Exception:
