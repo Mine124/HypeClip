@@ -1,5 +1,5 @@
 # ============================================================
-#  HypeClip portable builder  (full replace)
+#  HypeClip portable builder  (full replace - v2, fixes PyInstaller PATH)
 #  Run by CI:  powershell -ExecutionPolicy Bypass -File packaging\build_portable.ps1
 #  Output:     dist\HypeClip-Portable-<version>.zip
 # ============================================================
@@ -24,7 +24,24 @@ foreach ($d in @("build", "dist")) {
 $stage = Join-Path $root "build\stage"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# ---------- locate web UI (THE FIX) ----------
+# ---------- python env + deps (THE FIX) ----------
+$venvPy = Join-Path $root ".venv\Scripts\python.exe"
+if (-not (Test-Path $venvPy)) {
+    Write-Host "[env] creating virtualenv"
+    python -m venv .venv
+}
+if (-not (Test-Path $venvPy)) { throw "virtualenv python not found at $venvPy" }
+Write-Host "[env] venv python: $venvPy"
+& $venvPy -m pip install --upgrade pip --quiet
+& $venvPy -m pip install -r requirements.txt --quiet
+$buildReq = Join-Path $root "packaging\requirements-build.txt"
+if (Test-Path $buildReq) {
+    & $venvPy -m pip install -r $buildReq --quiet
+}
+Write-Host "[env] PyInstaller version:"
+& $venvPy -m PyInstaller --version
+
+# ---------- locate web UI ----------
 $webSrc = $null
 $candidate = Join-Path $root "web"
 if ((Test-Path $candidate) -and (Test-Path (Join-Path $candidate "index.html"))) {
@@ -92,14 +109,14 @@ if (-not (Test-Path $icon)) {
     } catch { Write-Host "[icon] WARNING: could not generate icon: $_" }
 }
 
-# ---------- build with PyInstaller ----------
+# ---------- build with PyInstaller (via venv python, no PATH needed) ----------
 $spec = Join-Path $root "packaging\hypeclip.spec"
 if (Test-Path $spec) {
     Write-Host "[build] using spec: $spec"
-    pyinstaller --noconfirm --clean $spec
+    & $venvPy -m PyInstaller --noconfirm --clean $spec
 } else {
     Write-Host "[build] no spec found - building with defaults"
-    pyinstaller --noconfirm --clean --name HypeClip --icon icon.ico --windowed run_app.py
+    & $venvPy -m PyInstaller --noconfirm --clean --name HypeClip --icon icon.ico --windowed run_app.py
 }
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
