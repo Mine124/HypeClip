@@ -1,78 +1,134 @@
-param([switch]$SkipDeps)
+# ============================================================
+#  HypeClip portable builder  (full replace)
+#  Run by CI:  powershell -ExecutionPolicy Bypass -File packaging\build_portable.ps1
+#  Output:     dist\HypeClip-Portable-<version>.zip
+# ============================================================
 $ErrorActionPreference = "Stop"
-Set-Location (Join-Path $PSScriptRoot "..")
-$version = (Select-String -Path hypeclip/config.py `
-  -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-Write-Host "Building HypeClip Portable v$version" -ForegroundColor Cyan
-$py = ".\.venv\Scripts\python.exe"
+$env:PYTHONIOENCODING = "utf-8"
 
-if (!$SkipDeps) {
-  if (!(Test-Path .venv)) { python -m venv .venv }
-  & $py -m pip install -U pip wheel | Out-Null
-  & $py -m pip install -r requirements.txt -r packaging\requirements-build.txt
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+Write-Host "[build] project root: $root"
 
-  # ---- FFmpeg: try several mirrors; survive total failure ----
-  New-Item -ItemType Directory -Force bin | Out-Null
-  if (!(Test-Path bin\ffmpeg.exe)) {
-    $zip = "$env:TEMP\ffmpeg_hypeclip.zip"
-    $tmpd = "$env:TEMP\ff_hc"
-    $mirrors = @(
-      "https://github.com/GyanD/codexffmpeg/releases/latest/download/ffmpeg-release-essentials.zip",
-      "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-      "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-win32-x64"
+# ---------- read version ----------
+$cfg = Join-Path $root "hypeclip\config.py"
+if (-not (Test-Path $cfg)) { throw "hypeclip\config.py not found" }
+$v = (Select-String -Path $cfg -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+Write-Host "[build] version v$v"
+
+# ---------- clean ----------
+foreach ($d in @("build", "dist")) {
+    $p = Join-Path $root $d
+    if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+}
+$stage = Join-Path $root "build\stage"
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+# ---------- locate web UI (THE FIX) ----------
+$webSrc = $null
+$candidate = Join-Path $root "web"
+if ((Test-Path $candidate) -and (Test-Path (Join-Path $candidate "index.html"))) {
+    $webSrc = $candidate
+} else {
+    $hit = Get-ChildItem -Path $root -Recurse -Filter "index.html" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(\.venv|build|dist|node_modules|\.git|\.github)\\' } |
+        Select-Object -First 1
+    if ($hit) { $webSrc = $hit.Directory.FullName }
+}
+if (-not $webSrc) { throw "web UI not found: no index.html anywhere in the repo" }
+Write-Host "[build] web UI source: $webSrc"
+
+# ---------- ffmpeg (bundled into the zip) ----------
+function Get-FFmpeg($destDir) {
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    if ((Test-Path (Join-Path $destDir "ffmpeg.exe")) -and
+        (Test-Path (Join-Path $destDir "ffprobe.exe"))) {
+        Write-Host "[ffmpeg] already present"; return
+    }
+    $urls = @(
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+        "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip",
+        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-lgpl.zip"
     )
-    $got = $false
-    foreach ($u in $mirrors) {
-      try {
-        Write-Host "downloading FFmpeg from: $u"
-        Invoke-WebRequest $u -OutFile $zip -MaximumRedirection 10 `
-          -UserAgent "Mozilla/5.0"
-        if ((Get-Item $zip).Length -gt 30MB) { $got = $true; break }
-        Write-Warning "file too small - trying next mirror..."
-      } catch {
-        Write-Warning "mirror failed: $u"
-      }
+    $zip = Join-Path $env:TEMP "ffmpeg_portable.zip"
+    $ok = $false
+    foreach ($u in $urls) {
+        try {
+            Write-Host "[ffmpeg] downloading $u"
+            Invoke-WebRequest -Uri $u -OutFile $zip -UserAgent "Mozilla/5.0" -MaximumRedirection 10
+            if ((Get-Item $zip).Length -gt 10MB) { $ok = $true; break }
+        } catch { Write-Host "[ffmpeg] mirror failed: $u" }
     }
-    if ($got) {
-      Expand-Archive $zip $tmpd -Force
-      Get-ChildItem -Path $tmpd -Recurse -Include ffmpeg.exe,ffprobe.exe |
-        ForEach-Object { Copy-Item $_.FullName bin\ -Force }
-      Remove-Item $zip,$tmpd -Recurse -Force -ErrorAction SilentlyContinue
-      if (Test-Path bin\ffmpeg.exe) {
-        Write-Host "bin\ffmpeg.exe ready" -ForegroundColor Green
-      } else {
-        Write-Warning "downloaded but exes not found - continuing without bundle"
-      }
-    } else {
-      Write-Warning "ALL FFmpeg mirrors failed - building WITHOUT bundled ffmpeg."
-      Write-Warning "(App self-downloads FFmpeg into Data\bin on first run.)"
+    if (-not $ok) { Write-Host "[ffmpeg] WARNING: not bundled - app will download at runtime"; return }
+    $tmp = Join-Path $env:TEMP "ffmpeg_extract"
+    if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+    Expand-Archive -Path $zip -DestinationPath $tmp -Force
+    foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
+        $found = Get-ChildItem -Path $tmp -Recurse -Filter $exe -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { Copy-Item $found.FullName (Join-Path $destDir $exe) -Force }
     }
-  }
+    Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "[ffmpeg] bundled into $destDir"
+}
+Get-FFmpeg (Join-Path $stage "Data\bin")
 
-  New-Item -ItemType Directory -Force assets | Out-Null
-  if (!(Test-Path packaging\icon.ico)) { & $py packaging\icon.py }
-  & ".\.venv\Scripts\pyinstaller.exe" packaging\hypeclip.spec --noconfirm `
-    --distpath dist --workpath build
+# ---------- icon ----------
+$icon = Join-Path $root "icon.ico"
+if (-not (Test-Path $icon)) {
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $bmp = New-Object System.Drawing.Bitmap 64, 64
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.SmoothingMode = "AntiAlias"
+        $g.Clear([System.Drawing.Color]::FromArgb(255, 17, 21, 38))
+        $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 124, 92, 255))
+        $g.FillEllipse($brush, 10, 10, 44, 44)
+        $g.Dispose()
+        $ico = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+        $fs = [System.IO.File]::Create($icon)
+        $ico.Save($fs); $fs.Dispose()
+        Write-Host "[icon] icon.ico written"
+    } catch { Write-Host "[icon] WARNING: could not generate icon: $_" }
 }
 
-$stage = "dist\HypeClip-Portable"
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory -Force $stage | Out-Null
-Copy-Item "dist\HypeClip\*" $stage -Recurse -Force
-New-Item -ItemType File -Force "$stage\portable.flag" | Out-Null
-foreach ($d in "Data","Data\output","Data\assets\sfx","Data\assets\music",
-               "Data\assets\watermarks","Data\app","Data\backups","Data\cache") {
-  New-Item -ItemType Directory -Force "$stage\$d" | Out-Null
+# ---------- build with PyInstaller ----------
+$spec = Join-Path $root "packaging\hypeclip.spec"
+if (Test-Path $spec) {
+    Write-Host "[build] using spec: $spec"
+    pyinstaller --noconfirm --clean $spec
+} else {
+    Write-Host "[build] no spec found - building with defaults"
+    pyinstaller --noconfirm --clean --name HypeClip --icon icon.ico --windowed run_app.py
 }
-& $py -c "from hypeclip.synth import synthesize_all; synthesize_all('dist/HypeClip-Portable/Data/assets/sfx')"
-Set-Content "$stage\Open Output Folder.bat" -Value 'start "" "%~dp0Data\output"' -Encoding ASCII
-if (Test-Path packaging\portable_README.txt) {
-  Copy-Item packaging\portable_README.txt "$stage\README.txt" -Force
-}
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-$out = "dist\HypeClip-Portable-$version.zip"
-if (Test-Path $out) { Remove-Item $out -Force }
-Compress-Archive -Path "$stage\*" -DestinationPath $out -CompressionLevel Optimal
-$mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
-Write-Host "DONE -> $out ($mb MB)" -ForegroundColor Green
+# ---------- stage the portable folder ----------
+$appOut = Join-Path $root "dist\HypeClip"
+if (-not (Test-Path $appOut)) {
+    $alt = Get-ChildItem (Join-Path $root "dist") -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($alt) { $appOut = $alt.FullName }
+}
+if (-not (Test-Path $appOut)) { throw "PyInstaller output not found in dist\" }
+Copy-Item (Join-Path $appOut "*") $stage -Recurse -Force
+
+# ---------- stage web UI + VERIFY ----------
+$webDest = Join-Path $stage "Data\assets\web"
+New-Item -ItemType Directory -Force -Path $webDest | Out-Null
+Copy-Item (Join-Path $webSrc "*") $webDest -Recurse -Force
+$bundlePkg = Join-Path $stage "_internal\hypeclip"
+if (Test-Path $bundlePkg) {
+    $w2 = Join-Path $bundlePkg "web"
+    New-Item -ItemType Directory -Force -Path $w2 | Out-Null
+    Copy-Item (Join-Path $webSrc "*") $w2 -Recurse -Force
+}
+if (-not (Test-Path (Join-Path $webDest "index.html"))) {
+    throw "VERIFICATION FAILED: web UI missing from portable stage"
+}
+Write-Host "[web] staged OK: $webDest"
+
+# ---------- zip ----------
+$zip = Join-Path $root "dist\HypeClip-Portable-$v.zip"
+if (Test-Path $zip) { Remove-Item $zip -Force }
+Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal
+Write-Host ("[done] {0} ({1} MB)" -f $zip, [math]::Round((Get-Item $zip).Length / 1MB, 1))
