@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 # ------------------------------------------------------------------ app ---
 APP_NAME = "HypeClip Studio"
-APP_VERSION = "3.9.7"
+APP_VERSION = "4.0.0"
 APP_TAGLINE = "AI stream clipping studio"
 
 HOST = "127.0.0.1"
