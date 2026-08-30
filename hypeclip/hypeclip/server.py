@@ -43,6 +43,33 @@ def web_dir() -> str:
     return ov if os.path.isfile(os.path.join(ov, "index.html")) else WEB_DIR
 
 
+# --- shape-proof helpers: work whether the module exposes a function,
+# --- a precomputed bool, or nothing at all. Never crashes /api/meta.
+def _nvenc_flag() -> bool:
+    try:
+        from .utils import has_nvenc
+        return bool(has_nvenc() if callable(has_nvenc) else has_nvenc)
+    except Exception:
+        return False
+
+
+def _licensed_flag() -> bool:
+    f = getattr(license_module, "is_licensed", None)
+    try:
+        return bool(f() if callable(f) else f)
+    except Exception:
+        return False
+
+
+def _license_status() -> dict:
+    f = getattr(license_module, "status", None)
+    try:
+        v = f() if callable(f) else f
+    except Exception:
+        v = None
+    return v if isinstance(v, dict) else {}
+
+
 class Job(pipeline.Reporter):
     def __init__(self, url: str, settings: Settings):
         self.id = uuid.uuid4().hex[:12]
@@ -200,7 +227,7 @@ async def start_upload_job(options: str = Form("{}"),
 
 def _run(job: Job):
     job.state = "running"
-    job.s._licensed = license_module.is_licensed()
+    job.s._licensed = _licensed_flag()
     try:
         if job.url and job.url.startswith("http"):
             try:
@@ -402,12 +429,11 @@ def reveal_clip(body: dict):
 
 @app.get("/api/meta")
 def meta():
-    from .utils import has_nvenc
     return {"version": APP_VERSION, "out_dir": Settings().out_dir,
-            "nvenc": has_nvenc(),
-            "manifest_configured": bool(updater.MANIFEST_URL),
-            "licensed": license_module.is_licensed(),
-            "tier": license_module.status().get("tier", "free")}
+            "nvenc": _nvenc_flag(),
+            "manifest_configured": bool(getattr(updater, "MANIFEST_URL", "")),
+            "licensed": _licensed_flag(),
+            "tier": _license_status().get("tier", "free")}
 
 
 # ------------------------- licensing -------------------------
@@ -417,13 +443,23 @@ class LicenseReq(BaseModel):
 
 @app.post("/api/license/activate")
 def license_activate(req: LicenseReq):
-    ok, msg = license_module.activate(req.key)
-    return {"ok": ok, "message": msg, **license_module.status()}
+    f = getattr(license_module, "activate", None)
+    try:
+        res = f(req.key) if callable(f) else (False, "licensing unavailable")
+    except Exception as e:
+        res = (False, str(e))
+    if isinstance(res, dict):
+        ok, msg = bool(res.get("ok")), str(res.get("message", ""))
+    elif isinstance(res, (list, tuple)) and len(res) >= 2:
+        ok, msg = bool(res[0]), str(res[1])
+    else:
+        ok, msg = bool(res), ""
+    return {"ok": ok, "message": msg, **_license_status()}
 
 
 @app.get("/api/license/status")
 def license_status():
-    return license_module.status()
+    return _license_status()
 
 
 @app.get("/api/download/logs")
