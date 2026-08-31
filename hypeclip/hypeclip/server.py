@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import licensing as license_module
-from . import pipeline, updater
+from . import pipeline, updater, vre as vre_mod
 from .branding import router as branding_router
 from .captionstyle import DEFAULTS, CaptionStyle
 from .config import APP_VERSION, DATA_DIR, RESOURCE_DIR, WEB_DIR, Settings
@@ -43,8 +43,6 @@ def web_dir() -> str:
     return ov if os.path.isfile(os.path.join(ov, "index.html")) else WEB_DIR
 
 
-# --- shape-proof helpers: work whether the module exposes a function,
-# --- a precomputed bool, or nothing at all. Never crashes /api/meta.
 def _nvenc_flag() -> bool:
     try:
         from .utils import has_nvenc
@@ -175,9 +173,32 @@ def start_job(req: StartReq):
         except Exception:
             pass
     cap = req.options.pop("caption", None)
-    if isinstance(cap, dict):
-        CaptionStyle(cap).save_active()
     s.update(req.options)
+
+    # ---- VRE style transfer: active blueprint fills UNSPECIFIED options
+    applied = []
+    try:
+        bp = vre_mod.active_blueprint()
+        if bp:
+            ov, hint = vre_mod.blueprint_overrides(bp)
+            for k, v in ov.items():
+                if k not in (req.options or {}):
+                    try:
+                        setattr(s, k, v)
+                        applied.append("%s=%s" % (k, v))
+                    except Exception:
+                        pass
+            if cap is None and hint:
+                cap = {k: v for k, v in hint.items() if k in DEFAULTS}
+                if cap:
+                    applied.append("caption hints")
+    except Exception:
+        pass
+    if isinstance(cap, dict):
+        try:
+            CaptionStyle(cap).save_active()
+        except Exception:
+            pass
     try:
         json.dump({k: getattr(s, k) for k in (
             "mode", "max_clips", "clip_duration", "pre_roll",
@@ -192,6 +213,13 @@ def start_job(req: StartReq):
         pass
     job = Job(req.url.strip(), s)
     jobs[job.id] = job
+    if applied:
+        name = ""
+        try:
+            name = (vre_mod.active_blueprint() or {}).get("name", "")
+        except Exception:
+            pass
+        job.log("[vre] style '%s' applied: %s" % (name, ", ".join(applied)))
     threading.Thread(target=_run, args=(job,), daemon=True).start()
     return {"job_id": job.id}
 
@@ -382,6 +410,63 @@ def get_revise(revise_id: str):
         raise HTTPException(404)
     return {"id": rec["id"], "state": rec["state"], "error": rec["error"],
             "result": rec["result"], "logs": list(rec["logs"])}
+
+
+# ------------------------- VRE: viral reverse engineering ---------------
+class VreAnalyzeReq(BaseModel):
+    url: str
+    deep: bool = False
+
+
+class VreActivateReq(BaseModel):
+    id: str | None = None
+
+
+@app.post("/api/vre/analyze")
+def vre_analyze(body: VreAnalyzeReq):
+    ok, msg = vre_mod.start_analysis(body.url, body.deep)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True}
+
+
+@app.get("/api/vre/status")
+def vre_status():
+    return vre_mod.status()
+
+
+@app.get("/api/vre/blueprints")
+def vre_blueprints():
+    return vre_mod.list_blueprints()
+
+
+@app.get("/api/vre/blueprint/{bid}")
+def vre_blueprint(bid: str):
+    bp = vre_mod.get_blueprint(bid)
+    if not bp:
+        raise HTTPException(404)
+    return bp
+
+
+@app.delete("/api/vre/blueprint/{bid}")
+def vre_delete(bid: str):
+    return {"ok": vre_mod.delete_blueprint(bid)}
+
+
+@app.post("/api/vre/activate")
+def vre_activate(body: VreActivateReq):
+    if not body.id:
+        vre_mod.deactivate()
+        return {"ok": True, "active": None}
+    if not vre_mod.activate(body.id):
+        raise HTTPException(404, "blueprint not found")
+    return {"ok": True, "active": vre_mod.active_id()}
+
+
+@app.get("/api/vre/active")
+def vre_active():
+    bp = vre_mod.active_blueprint()
+    return {"id": (bp or {}).get("id"), "name": (bp or {}).get("name")}
 
 
 @app.post("/api/upload")
@@ -677,14 +762,16 @@ def index():
             html = f.read()
     except Exception:
         return FileResponse(p)
-    tag = '<script src="/static/retention.js"></script>'
-    if "retention.js" not in html:
-        low = html.lower()
-        if "</body>" in low:
-            i = low.rindex("</body>")
-            html = html[:i] + tag + html[i:]
-        else:
-            html += tag
+    for name in ("retention.js", "vre.js"):
+        if ("src=\"/static/%s\"" % name) not in html \
+                and os.path.isfile(os.path.join(web_dir(), name)):
+            tag = '<script src="/static/%s"></script>' % name
+            low = html.lower()
+            if "</body>" in low:
+                i = low.rindex("</body>")
+                html = html[:i] + tag + html[i:]
+            else:
+                html += tag
     return HTMLResponse(html)
 
 
