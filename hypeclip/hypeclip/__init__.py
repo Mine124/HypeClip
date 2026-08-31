@@ -1,25 +1,22 @@
 """HypeClip package bootstrap.
 
-Universal download-retry engine for yt-dlp (v6.1).
+Universal download-retry engine for yt-dlp (v6.2).
 
 Applies to EVERY platform the app accepts - YouTube, TikTok, Twitch,
 Instagram, Facebook, and any other link yt-dlp understands:
 
   - login walls       -> retry with Data\\cookies.txt, then cookies from
-                         installed browsers (Chrome, Edge, Firefox, Brave,
-                         Opera, Vivaldi). yt-dlp sends each site only its
-                         own cookies, so one jar never leaks across sites.
+                         installed browsers. yt-dlp sends each site only
+                         its own cookies, so one jar never leaks across.
   - YouTube only      -> alternate player clients (tv, tv_simply, ...)
   - format walls      -> "Requested format is not available" relaxes the
                          selector to best-available, merged to mp4
   - hammering guard   -> after a failed bot-flag chain, a 15-minute
                          cooldown engages for THAT platform only
 
-v6.1: safe-blank sentinel hardening. Metric sources may return a
-"_SafeBlank" placeholder when a signal has no data (e.g. a quiet chat
-window). That class is now patched at startup to behave as a numeric
-zero (float/int/bool/add), so scan fusion degrades gracefully instead
-of raising "float() argument ... not '_SafeBlank'".
+v6.2: the safe-blank sentinel sweep now covers EVERY hypeclip module
+(via pkgutil) instead of a hand-picked list, so the numeric-zero
+hardening lands no matter which module defines the class.
 """
 from __future__ import annotations
 
@@ -49,8 +46,13 @@ _FAIL_T: dict = {}
 
 # ----------------------------------------------------- sentinel hardening
 def _patch_blank_sentinels() -> None:
-    """Make any _SafeBlank-style sentinel behave as numeric zero."""
+    """Make any _SafeBlank-style sentinel behave as numeric zero.
+
+    Sweeps every hypeclip submodule (except side-effecty ones like the
+    tray) so the patch lands regardless of which module owns the class.
+    """
     import importlib
+    import pkgutil
 
     def _sb_float(self):
         return 0.0
@@ -88,7 +90,19 @@ def _patch_blank_sentinels() -> None:
                     pass
         return changed
 
-    for mname in ("sources", "scan", "pipeline", "intel", "beats"):
+    try:
+        pkg = importlib.import_module(__package__)
+        paths = list(getattr(pkg, "__path__", []))
+    except Exception:
+        return
+    skip = {"tray", "main", "__main__"}
+    try:
+        mod_names = [mi.name for mi in pkgutil.iter_modules(paths)]
+    except Exception:
+        return
+    for mname in mod_names:
+        if mname in skip:
+            continue
         try:
             mod = importlib.import_module("." + mname, __package__)
         except Exception:
@@ -98,7 +112,7 @@ def _patch_blank_sentinels() -> None:
         except Exception:
             continue
         for attr in names:
-            if "SafeBlank" in attr or attr.startswith("_Safe"):
+            if "SafeBlank" in attr:
                 try:
                     if _harden(getattr(mod, attr)):
                         print("[hypeclip] hardened numeric sentinel: "
