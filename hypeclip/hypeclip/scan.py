@@ -1,5 +1,12 @@
 """Visual chat-speed scanner: watches a user-selected rectangle of the video
-and measures how fast it scrolls. Sustained fast scrolling == hype."""
+and measures how fast it scrolls. Sustained fast scrolling == hype.
+
+v2 (hardened): every Settings read goes through _num(), which converts
+blanks (_SafeBlank), None, and bad strings into safe defaults. This kills
+the "float() argument must be ... not '_SafeBlank'" crash at its source,
+and the scan now always reports progress_scan(1.0) when the frame loop
+ends (fixes the UI sticking at ~98%).
+"""
 from __future__ import annotations
 import subprocess
 
@@ -8,6 +15,31 @@ import numpy as np
 from .hype import Moment
 
 FW, FH = 96, 64
+
+_DEF_THRESHOLD = 3.5
+_DEF_COOLDOWN = 8.0
+_DEF_MAX_CLIPS = 20
+_DEF_CLIP_DUR = 90.0
+_DEF_PREROLL = 1.5
+
+
+def _num(v, default):
+    """Coerce any setting value to float; blanks/None/bad strings -> default.
+
+    Deliberately does NOT call float() directly on unknown objects: a
+    _SafeBlank str()s to a repr that float() rejects, so we always land
+    on the default instead of crashing (or on a hardened-blank 0.0).
+    """
+    if isinstance(v, bool):
+        return float(default)
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        f = float(v)
+        return f if f == f else float(default)  # NaN guard
+    try:
+        f = float(str(v).strip())
+        return f if f == f else float(default)
+    except Exception:
+        return float(default)
 
 
 class ScrollScanner:
@@ -44,19 +76,24 @@ class ScrollScanner:
     def detect(self, total=None):
         prev = None
         vals: list[float] = []
-        est = int((total or 0) * self.fps)
+        est = int(_num(total, 0.0) * self.fps)
         last_report = -1.0
 
-        for i, frame in enumerate(self._frames()):
-            g = frame.astype(np.float32) / 255.0
-            if prev is not None:
-                vals.append(float(np.abs(g - prev).mean()))
-            prev = g
-            if est and i % 60 == 0 and self.r:
-                frac = min(i / est, 0.99)
-                if frac - last_report > 0.02:
-                    last_report = frac
-                    self.r.progress_scan(frac)
+        try:
+            for i, frame in enumerate(self._frames()):
+                g = frame.astype(np.float32) / 255.0
+                if prev is not None:
+                    vals.append(float(np.abs(g - prev).mean()))
+                prev = g
+                if est and i % 60 == 0 and self.r:
+                    frac = min(i / est, 0.99)
+                    if frac - last_report > 0.02:
+                        last_report = frac
+                        self.r.progress_scan(frac)
+        finally:
+            # ALWAYS complete the scan bar, even if the frame source died
+            if self.r:
+                self.r.progress_scan(1.0)
 
         v = np.asarray(vals, dtype=np.float32)
         empty = {"t": [], "score": []}
@@ -68,7 +105,7 @@ class ScrollScanner:
         csum = np.cumsum(v)
         csum2 = np.cumsum(v * v)
         W = int(self.WINDOW_S * self.fps)
-        thr = float(self.s.hype_threshold)
+        thr = _num(self.s.hype_threshold, _DEF_THRESHOLD)
         n = v.size
 
         score = np.zeros(n, dtype=np.float32)
@@ -92,18 +129,19 @@ class ScrollScanner:
                 if score[i] == score[max(0, i - R):i + R + 1].max()]
         cand.sort(key=lambda i: -score[i])
 
-        cd = float(self.s.cooldown) * self.fps
+        cd = _num(self.s.cooldown, _DEF_COOLDOWN) * self.fps
         accepted: list[int] = []
         for p in cand:
             if all(abs(p - a) > cd for a in accepted):
                 accepted.append(p)
-            if len(accepted) >= int(self.s.max_clips):
+            if len(accepted) >= int(_num(self.s.max_clips, _DEF_MAX_CLIPS)):
                 break
         accepted.sort()
 
-        total_dur = float(total or n / self.fps)
-        dur = float(self.s.clip_duration)
-        pre = float(self.s.pre_roll)
+        total_num = _num(total, 0.0)
+        total_dur = total_num if total_num > 0 else n / self.fps
+        dur = _num(self.s.clip_duration, _DEF_CLIP_DUR)
+        pre = _num(self.s.pre_roll, _DEF_PREROLL)
 
         moments: list[Moment] = []
         for p in accepted:
