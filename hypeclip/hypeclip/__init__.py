@@ -1,12 +1,25 @@
 """HypeClip package bootstrap.
 
-YouTube bot-check auto-retry for yt-dlp (v5).
+Universal download-retry engine for yt-dlp (v6.1).
 
-v5: after a full failed retry chain, a 15-minute cooldown blocks further
-full chains (hammering YouTube deepens the IP/account flag), and the
-final error honestly reports whether auth or formats were the blocker.
-Order otherwise unchanged: Data\\cookies.txt, cookies+player clients,
-cookieless clients, installed browsers only, relaxed-format fallback.
+Applies to EVERY platform the app accepts - YouTube, TikTok, Twitch,
+Instagram, Facebook, and any other link yt-dlp understands:
+
+  - login walls       -> retry with Data\\cookies.txt, then cookies from
+                         installed browsers (Chrome, Edge, Firefox, Brave,
+                         Opera, Vivaldi). yt-dlp sends each site only its
+                         own cookies, so one jar never leaks across sites.
+  - YouTube only      -> alternate player clients (tv, tv_simply, ...)
+  - format walls      -> "Requested format is not available" relaxes the
+                         selector to best-available, merged to mp4
+  - hammering guard   -> after a failed bot-flag chain, a 15-minute
+                         cooldown engages for THAT platform only
+
+v6.1: safe-blank sentinel hardening. Metric sources may return a
+"_SafeBlank" placeholder when a signal has no data (e.g. a quiet chat
+window). That class is now patched at startup to behave as a numeric
+zero (float/int/bool/add), so scan fusion degrades gracefully instead
+of raising "float() argument ... not '_SafeBlank'".
 """
 from __future__ import annotations
 
@@ -14,22 +27,87 @@ import os
 import sys
 import time
 
-_BOT_MARKERS = (
-    "sign in to confirm",
-    "not a bot",
-    "use --cookies",
-    "log in to",
-    "login required",
-    "please sign in",
+_AUTH_MARKERS = (
+    "sign in to confirm", "not a bot", "confirm you", "use --cookies",
+    "log in to", "login required", "please sign in", "requires login",
+    "requires authentication", "private video", "this video is private",
+    "login required to view", "account is private",
+    "too many requests", "http error 429", "rate limit", "rate-limited",
+    "rate limited",
+)
+_FLAG_MARKERS = (
+    "sign in to confirm", "not a bot", "confirm you",
+    "too many requests", "http error 429",
 )
 _FMT_RELAXED = "bestvideo*+bestaudio/best"
 _CLIENTS = ("tv", "tv_simply", "web_safari", "mweb", "ios", "android_vr")
 _BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi")
 _COOLDOWN_S = 900.0
-_GOOD: dict = {"extra": None}
-_FAIL: dict = {"t": 0.0, "kind": ""}
+_GOOD_X: dict = {}
+_FAIL_T: dict = {}
 
 
+# ----------------------------------------------------- sentinel hardening
+def _patch_blank_sentinels() -> None:
+    """Make any _SafeBlank-style sentinel behave as numeric zero."""
+    import importlib
+
+    def _sb_float(self):
+        return 0.0
+
+    def _sb_int(self):
+        return 0
+
+    def _sb_bool(self):
+        return False
+
+    def _sb_add(self, o):
+        try:
+            return 0.0 + float(o)
+        except Exception:
+            return NotImplemented
+
+    def _sb_radd(self, o):
+        try:
+            return float(o) + 0.0
+        except Exception:
+            return NotImplemented
+
+    def _harden(cls) -> bool:
+        if not isinstance(cls, type):
+            return False
+        changed = False
+        for name, fn in (("__float__", _sb_float), ("__int__", _sb_int),
+                         ("__bool__", _sb_bool), ("__add__", _sb_add),
+                         ("__radd__", _sb_radd)):
+            if not hasattr(cls, name):
+                try:
+                    setattr(cls, name, fn)
+                    changed = True
+                except Exception:
+                    pass
+        return changed
+
+    for mname in ("sources", "scan", "pipeline", "intel", "beats"):
+        try:
+            mod = importlib.import_module("." + mname, __package__)
+        except Exception:
+            continue
+        try:
+            names = list(vars(mod).keys())
+        except Exception:
+            continue
+        for attr in names:
+            if "SafeBlank" in attr or attr.startswith("_Safe"):
+                try:
+                    if _harden(getattr(mod, attr)):
+                        print("[hypeclip] hardened numeric sentinel: "
+                              + mname + "." + attr, flush=True)
+                except Exception:
+                    pass
+
+
+# ------------------------------------------------------------- helpers
 def _data_dir() -> str:
     try:
         if getattr(sys, "frozen", False):
@@ -50,12 +128,29 @@ def _manual_cookiefile() -> str:
     return p if os.path.isfile(p) else ""
 
 
-def _is_bot_error(exc: BaseException) -> bool:
-    try:
-        s = str(exc).lower()
-        return any(m in s for m in _BOT_MARKERS)
-    except Exception:
-        return False
+def _platform_hint(url) -> str:
+    u = str(url or "").lower()
+    if "youtube.com" in u or "youtu.be" in u:
+        return "youtube"
+    if "tiktok.com" in u:
+        return "tiktok"
+    if "twitch.tv" in u:
+        return "twitch"
+    if "instagram.com" in u:
+        return "instagram"
+    if "facebook.com" in u or "fb.watch" in u:
+        return "facebook"
+    return "other"
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _AUTH_MARKERS)
+
+
+def _is_flag_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _FLAG_MARKERS)
 
 
 def _is_format_error(exc: BaseException) -> bool:
@@ -78,27 +173,39 @@ def _browser_installed(b: str) -> bool:
     return bool(p) and os.path.isdir(p)
 
 
-def _attempts() -> list:
+def _attempts(url) -> list:
+    platform = _platform_hint(url)
     cf = _manual_cookiefile()
     out = []
     if cf:
         out.append(("Data/cookies.txt", {"cookiefile": cf}))
+    if platform == "youtube":
         for cl in _CLIENTS:
-            out.append(("Data/cookies.txt + " + cl + " client",
-                        {"cookiefile": cf,
-                         "extractor_args": {"youtube": {
-                             "player_client": [cl]}}}))
-    else:
-        for cl in _CLIENTS:
-            out.append((cl + " player client (no cookies)",
-                        {"extractor_args": {"youtube": {
-                            "player_client": [cl]}}}))
+            label = ("Data/cookies.txt + " if cf else "") + cl + " client"
+            extra = {"extractor_args": {"youtube": {"player_client": [cl]}}}
+            if cf:
+                extra["cookiefile"] = cf
+            out.append((label, extra))
     for b in _BROWSERS:
-        if not _browser_installed(b):
-            continue
-        out.append((b + " browser cookies",
-                    {"cookiesfrombrowser": (b,)}))
+        if _browser_installed(b):
+            out.append((b + " browser cookies",
+                        {"cookiesfrombrowser": (b,)}))
     return out
+
+
+def _final_tip(platform: str, flagged: bool) -> str:
+    if flagged:
+        if platform == "youtube":
+            return (" | HypeClip: YouTube is flagging this IP/account - "
+                    "wait ~24h, test on a phone hotspot, or clip from "
+                    "Twitch meanwhile (no bot-check there).")
+        return (" | HypeClip: " + platform + " is rate-limiting this IP - "
+                "log in to " + platform + ".com in any browser on this PC, "
+                "wait a while, or use a different network.")
+    return (" | HypeClip: this content seems to need a login that has "
+            "access to it - sign in on " + platform +
+            ".com in any browser on this PC, or re-export "
+            "Data\\cookies.txt while on that site.")
 
 
 def _short(e: BaseException) -> str:
@@ -122,35 +229,34 @@ def _install_ytdlp_fix() -> None:
         try:
             return orig(self, url, *args, **kwargs)
         except Exception as first:
-            if not _is_bot_error(first):
+            if not _is_auth_error(first):
                 raise
-            # cooldown after a recently failed full chain
-            left = _COOLDOWN_S - (time.time() - _FAIL["t"])
-            if _FAIL["t"] > 0 and left > 0:
-                mins = int(left // 60) + 1
+            platform = _platform_hint(url)
+            left = _COOLDOWN_S - (time.time() - _FAIL_T.get(platform, 0.0))
+            if _FAIL_T.get(platform, 0.0) > 0 and left > 0:
                 raise type(first)(
-                    "HypeClip: YouTube bot-check cooldown active - "
-                    "retrying now would deepen the flag on your IP. "
-                    "Try again in ~%d min, switch to a phone hotspot, "
-                    "or use a Twitch VOD meanwhile." % mins)
+                    "HypeClip: %s retry cooldown active - retrying now "
+                    "would deepen the flag. Try again in ~%d min."
+                    % (platform, int(left // 60) + 1))
             cf = _manual_cookiefile()
-            print("[hypeclip] YouTube bot-check hit. cookies.txt: %s"
-                  % (cf or "NOT FOUND"), flush=True)
+            print("[hypeclip] %s login/bot wall hit. cookies.txt: %s"
+                  % (platform, cf or "NOT FOUND"), flush=True)
             last = first
-            n_bot = n_fmt = 0
-            if _GOOD["extra"] is not None:
+            n_flag = n_other = 0
+            good = _GOOD_X.get(platform)
+            if good is not None:
                 try:
                     print("[hypeclip] retrying with known-good method...",
                           flush=True)
                     opts = dict(self.params or {})
-                    opts.update(_GOOD["extra"])
+                    opts.update(good)
                     with yt_dlp.YoutubeDL(opts) as y2:
                         return orig(y2, url, *args, **kwargs)
                 except Exception as e:
                     last = e
-                    if not (_is_bot_error(e) or _is_format_error(e)):
+                    if not (_is_auth_error(e) or _is_format_error(e)):
                         raise
-            for label, extra in _attempts():
+            for label, extra in _attempts(url):
                 for mode in ("app-format", "relaxed"):
                     try:
                         opts = dict(self.params or {})
@@ -163,44 +269,38 @@ def _install_ytdlp_fix() -> None:
                             opts.setdefault("merge_output_format", "mp4")
                         with yt_dlp.YoutubeDL(opts) as y2:
                             r = orig(y2, url, *args, **kwargs)
-                        _GOOD["extra"] = extra
+                        _GOOD_X[platform] = extra
                         print("[hypeclip] method worked"
                               + (" (relaxed format)" if mode == "relaxed"
                                  else "") + ": " + label, flush=True)
-                        _FAIL["t"] = 0.0
+                        _FAIL_T.pop(platform, None)
                         return r
                     except Exception as e2:
                         last = e2
-                        if _is_bot_error(e2):
-                            n_bot += 1
+                        if _is_flag_error(e2):
+                            n_flag += 1
                             print("[hypeclip]   " + label
                                   + ": auth rejected", flush=True)
                             break
+                        if _is_auth_error(e2):
+                            n_other += 1
+                            print("[hypeclip]   " + label
+                                  + ": needs the right login", flush=True)
+                            break
                         if _is_format_error(e2):
-                            n_fmt += 1
                             if mode == "app-format":
                                 continue
                             print("[hypeclip]   " + label
                                   + ": still no formats", flush=True)
                             break
+                        n_other += 1
                         print("[hypeclip]   " + label + ": "
                               + _short(e2), flush=True)
                         break
-            _FAIL["t"] = time.time()
-            _FAIL["kind"] = "auth" if n_bot >= n_fmt else "format"
-            if _FAIL["kind"] == "auth":
-                tip = (" | HypeClip: YouTube rejected every login method - "
-                       "your IP/account is flagged. Wait ~24h, or test on "
-                       "a phone hotspot, or clip from Twitch meanwhile "
-                       "(no bot-check there).")
-            else:
-                tip = (" | HypeClip: login works but no client served "
-                       "downloadable formats (PO-token enforcement). "
-                       "Switch network (phone hotspot) or update yt-dlp.")
-            try:
-                raise type(first)(str(first) + tip)
-            except Exception:
-                raise first
+            flagged = n_flag >= 1 and n_flag >= n_other
+            if flagged:
+                _FAIL_T[platform] = time.time()
+            raise type(first)(str(last) + _final_tip(platform, flagged))
 
     try:
         yt_dlp.YoutubeDL.extract_info = extract_info
@@ -208,6 +308,11 @@ def _install_ytdlp_fix() -> None:
     except Exception:
         pass
 
+
+try:
+    _patch_blank_sentinels()
+except Exception:
+    pass
 
 try:
     _install_ytdlp_fix()
