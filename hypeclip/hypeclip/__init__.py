@@ -1,23 +1,16 @@
-"""HypeClip package bootstrap.
+"""HypeClip package bootstrap - v6.4.
 
-Universal download-retry engine for yt-dlp (v6.3) + runtime sentinel
-hardening.
-
-Download retries cover EVERY platform (YouTube, TikTok, Twitch, ...):
-login walls -> Data\\cookies.txt / browser cookies; YouTube-only player
-clients; format walls -> relaxed selector; 15-min per-platform cooldown
-after a failed bot-flag chain.
-
-v6.3: _SafeBlank-style sentinels are hardened at RUNTIME via a garbage-
-collector sweep of all live classes, triggered from a wrapper around
-scan.detect. This works even when the class is defined inside a
-function (invisible to import-time sweeps), because an instance must
-exist in memory for float() to fail on it.
+Boot stamp + universal yt-dlp retry engine + lazy scan hardening.
+The first line of output is always the boot stamp so we can verify
+exactly which version of this file is running inside a build.
 """
 from __future__ import annotations
 
+print("[hypeclip] __init__ v6.4 ACTIVE", flush=True)
+
 import os
 import sys
+import threading
 import time
 
 _AUTH_MARKERS = (
@@ -40,7 +33,7 @@ _GOOD_X: dict = {}
 _FAIL_T: dict = {}
 
 
-# ------------------------------------------------- sentinel hardening
+# ---------------------------------------------- lazy scan hardening
 def _harden_class(cls) -> bool:
     if not isinstance(cls, type):
         return False
@@ -78,8 +71,7 @@ def _harden_class(cls) -> bool:
     return changed
 
 
-def _gc_harden_blank_classes() -> int:
-    """Harden EVERY live class whose name contains SafeBlank."""
+def _gc_sweep() -> int:
     import gc
     n = 0
     try:
@@ -99,43 +91,61 @@ def _gc_harden_blank_classes() -> int:
     return n
 
 
-def _wrap_scan_detection() -> None:
-    """Wrap scan.detect: on the _SafeBlank TypeError, harden + retry."""
-    import importlib
-    try:
-        scan = importlib.import_module(".scan", __package__)
-    except Exception as e:
-        print("[hypeclip] could not import scan for wrapping: %s" % e,
-              flush=True)
-        return
-    orig = getattr(scan, "detect", None)
-    if not callable(orig) or getattr(orig, "_hypeclip_hardened", False):
-        return
+def _wrap_when_ready(timeout_s: float = 600.0) -> None:
+    """Wait until hypeclip.scan exists in memory, then wrap detect().
 
-    def detect(*a, **k):
-        try:
-            return orig(*a, **k)
-        except TypeError as e:
-            if "_SafeBlank" in str(e):
-                print("[hypeclip] scan hit a blank sentinel - hardening "
-                      "and retrying once...", flush=True)
-                _gc_harden_blank_classes()
-                return orig(*a, **k)
-            raise
-
-    try:
-        detect._hypeclip_hardened = True
-    except Exception:
-        pass
-    scan.detect = detect
-    try:
-        pipe = importlib.import_module(".pipeline", __package__)
-        if getattr(pipe, "detect", None) is orig:
-            pipe.detect = detect
-    except Exception:
-        pass
-    print("[hypeclip] scan.detect wrapped with blank-hardening retry",
+    Works regardless of import order and regardless of HOW pipeline.py
+    imported the function (module attr or from-import alias), because we
+    rebind every alias in pipeline's namespace that points at the
+    original function object.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        scan = sys.modules.get("hypeclip.scan")
+        orig = getattr(scan, "detect", None) if scan else None
+        if callable(orig) and not getattr(orig, "_hypeclip_hardened", False):
+            def detect(*a, **k):
+                try:
+                    return orig(*a, **k)
+                except TypeError as e:
+                    if "_SafeBlank" in str(e):
+                        print("[hypeclip] scan hit a blank sentinel - "
+                              "hardening and retrying once...", flush=True)
+                        _gc_sweep()
+                        try:
+                            r = orig(*a, **k)
+                            print("[hypeclip] scan recovered after "
+                                  "hardening", flush=True)
+                            return r
+                        except Exception as e2:
+                            print("[hypeclip] scan retry failed: "
+                                  + str(e2)[:200], flush=True)
+                            raise
+                    raise
+            try:
+                detect._hypeclip_hardened = True
+            except Exception:
+                pass
+            scan.detect = detect
+            rebound = 0
+            pipe = sys.modules.get("hypeclip.pipeline")
+            if pipe is not None:
+                for aname, aval in list(vars(pipe).items()):
+                    if aval is orig:
+                        try:
+                            setattr(pipe, aname, detect)
+                            rebound += 1
+                        except Exception:
+                            pass
+            print("[hypeclip] scan.detect wrapped (lazy); pipeline "
+                  "aliases rebound: %d" % rebound, flush=True)
+            return
+        time.sleep(0.5)
+    print("[hypeclip] scan wrapper timed out waiting for hypeclip.scan",
           flush=True)
+
+
+threading.Thread(target=_wrap_when_ready, daemon=True).start()
 
 
 # ------------------------------------------------------------- helpers
@@ -339,16 +349,6 @@ def _install_ytdlp_fix() -> None:
     except Exception:
         pass
 
-
-try:
-    _gc_harden_blank_classes()
-except Exception:
-    pass
-
-try:
-    _wrap_scan_detection()
-except Exception:
-    pass
 
 try:
     _install_ytdlp_fix()
