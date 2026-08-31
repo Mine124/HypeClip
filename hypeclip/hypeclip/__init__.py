@@ -1,18 +1,11 @@
 """HypeClip package bootstrap.
 
-YouTube bot-check auto-retry for yt-dlp (v3).
+YouTube bot-check auto-retry for yt-dlp (v4).
 
-Order of attempts when YouTube says "Sign in to confirm you're not a bot":
-  1. Data\\cookies.txt
-  2. Data\\cookies.txt + tv / tv_simply / web_safari / mweb / ios clients
-  3. cookieless player clients
-  4. cookies from installed browsers only (uninstalled browsers are skipped)
-
-v3 fixes:
-  - cookies + alternate player client combos (the known-good bypass)
-  - browsers without a cookie database are skipped silently
-  - the ORIGINAL bot-check error is reported when all attempts fail,
-    instead of the last attempt's unrelated error
+v4: a retry that returns "Requested format is not available" means the
+AUTH SUCCEEDED (cookies worked) but the alternate client serves formats
+that fail the app's strict selector. In that case the format selector is
+relaxed to best-available and merged to mp4 by the bundled ffmpeg.
 """
 from __future__ import annotations
 
@@ -27,6 +20,7 @@ _BOT_MARKERS = (
     "login required",
     "please sign in",
 )
+_FMT_RELAXED = "bestvideo*+bestaudio/best"
 _CLIENTS = ("tv", "tv_simply", "web_safari", "mweb", "ios", "android_vr")
 _BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi")
 _GOOD: dict = {"extra": None}
@@ -58,6 +52,11 @@ def _is_bot_error(exc: BaseException) -> bool:
         return any(m in s for m in _BOT_MARKERS)
     except Exception:
         return False
+
+
+def _is_format_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return "requested format is not available" in s
 
 
 def _browser_installed(b: str) -> bool:
@@ -101,7 +100,7 @@ def _attempts() -> list:
 
 def _short(e: BaseException) -> str:
     s = " ".join(str(e).split())
-    return s[:110] + ("..." if len(s) > 110 else "")
+    return s[:100] + ("..." if len(s) > 100 else "")
 
 
 def _install_ytdlp_fix() -> None:
@@ -126,6 +125,7 @@ def _install_ytdlp_fix() -> None:
             cf = _manual_cookiefile()
             print("[hypeclip] YouTube bot-check hit. cookies.txt: %s"
                   % (cf or "NOT FOUND"), flush=True)
+            # fast path: method that already worked this session
             if _GOOD["extra"] is not None:
                 try:
                     print("[hypeclip] retrying with known-good method...",
@@ -133,30 +133,49 @@ def _install_ytdlp_fix() -> None:
                     opts = dict(self.params or {})
                     opts.update(_GOOD["extra"])
                     with yt_dlp.YoutubeDL(opts) as y2:
-                        r = orig(y2, url, *args, **kwargs)
-                        return r
+                        return orig(y2, url, *args, **kwargs)
                 except Exception as e:
                     last = e
+                    if not (_is_bot_error(e) or _is_format_error(e)):
+                        raise
             for label, extra in _attempts():
-                try:
-                    print("[hypeclip] YouTube bot-check - trying "
-                          + label + " ...", flush=True)
-                    opts = dict(self.params or {})
-                    opts.update(extra)
-                    with yt_dlp.YoutubeDL(opts) as y2:
-                        r = orig(y2, url, *args, **kwargs)
-                        _GOOD["extra"] = extra
-                        print("[hypeclip] method worked: " + label,
-                              flush=True)
+                for mode in ("app-format", "relaxed"):
+                    try:
+                        opts = dict(self.params or {})
+                        opts.update(extra)
+                        if mode == "relaxed":
+                            print("[hypeclip]   " + label
+                                  + ": auth OK, formats mismatch - "
+                                    "relaxing format selector...",
+                                  flush=True)
+                            opts["format"] = _FMT_RELAXED
+                            opts.setdefault("merge_output_format", "mp4")
+                        with yt_dlp.YoutubeDL(opts) as y2:
+                            r = orig(y2, url, *args, **kwargs)
+                        _GOOD["extra"] = extra  # auth only, never format
+                        print("[hypeclip] method worked"
+                              + (" (relaxed format)" if mode == "relaxed"
+                                 else "") + ": " + label, flush=True)
                         return r
-                except Exception as e2:
-                    last = e2
-                    print("[hypeclip]   failed: " + _short(e2), flush=True)
-                    continue
-            tip = (" | HypeClip: your IP is likely flagged - connect the PC "
-                   "to a phone hotspot and retry, or wait a day. Cookies "
-                   "were valid but the media endpoint demands a PO token "
-                   "from this network.")
+                    except Exception as e2:
+                        last = e2
+                        if _is_bot_error(e2):
+                            print("[hypeclip]   " + label
+                                  + ": auth rejected", flush=True)
+                            break  # try next combo
+                        if _is_format_error(e2):
+                            if mode == "app-format":
+                                continue  # relax and retry same combo
+                            print("[hypeclip]   " + label
+                                  + ": still no formats", flush=True)
+                            break
+                        print("[hypeclip]   " + label + ": "
+                              + _short(e2), flush=True)
+                        break
+            tip = (" | HypeClip: authentication is working but no client "
+                   "served downloadable formats - connect the PC to a "
+                   "phone hotspot and retry (flagged IP), or update "
+                   "yt-dlp in requirements.txt.")
             try:
                 raise type(first)(str(first) + tip)
             except Exception:
