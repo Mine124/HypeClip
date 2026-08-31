@@ -25,7 +25,19 @@ from .editor import router as editor_router
 from .learn import router as learn_router
 from .stylelearn import router as style_router
 from .utils import ff_filter_path, resolve_bin, run
+# Silence benign "browser closed the connection" asyncio noise
+import logging as _logging
 
+class _QuietConnReset(_logging.Filter):
+    def filter(self, record):
+        try:
+            m = record.getMessage()
+        except Exception:
+            return True
+        return ("ConnectionResetError" not in m
+                and "_call_connection_lost" not in m)
+
+_logging.getLogger("asyncio").addFilter(_QuietConnReset())
 app = FastAPI(title="HypeClip Studio")
 jobs: dict = {}
 exports: dict = {}
@@ -780,3 +792,4 @@ os.makedirs(Settings().work_dir, exist_ok=True)
 app.mount("/clips", StaticFiles(directory=Settings().out_dir), name="clips")
 app.mount("/media", StaticFiles(directory=Settings().work_dir), name="media")
 app.mount("/static", StaticFiles(directory=web_dir()), name="static")
+
