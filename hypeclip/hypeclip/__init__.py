@@ -1,22 +1,18 @@
 """HypeClip package bootstrap.
 
-Universal download-retry engine for yt-dlp (v6.2).
+Universal download-retry engine for yt-dlp (v6.3) + runtime sentinel
+hardening.
 
-Applies to EVERY platform the app accepts - YouTube, TikTok, Twitch,
-Instagram, Facebook, and any other link yt-dlp understands:
+Download retries cover EVERY platform (YouTube, TikTok, Twitch, ...):
+login walls -> Data\\cookies.txt / browser cookies; YouTube-only player
+clients; format walls -> relaxed selector; 15-min per-platform cooldown
+after a failed bot-flag chain.
 
-  - login walls       -> retry with Data\\cookies.txt, then cookies from
-                         installed browsers. yt-dlp sends each site only
-                         its own cookies, so one jar never leaks across.
-  - YouTube only      -> alternate player clients (tv, tv_simply, ...)
-  - format walls      -> "Requested format is not available" relaxes the
-                         selector to best-available, merged to mp4
-  - hammering guard   -> after a failed bot-flag chain, a 15-minute
-                         cooldown engages for THAT platform only
-
-v6.2: the safe-blank sentinel sweep now covers EVERY hypeclip module
-(via pkgutil) instead of a hand-picked list, so the numeric-zero
-hardening lands no matter which module defines the class.
+v6.3: _SafeBlank-style sentinels are hardened at RUNTIME via a garbage-
+collector sweep of all live classes, triggered from a wrapper around
+scan.detect. This works even when the class is defined inside a
+function (invisible to import-time sweeps), because an instance must
+exist in memory for float() to fail on it.
 """
 from __future__ import annotations
 
@@ -44,81 +40,102 @@ _GOOD_X: dict = {}
 _FAIL_T: dict = {}
 
 
-# ----------------------------------------------------- sentinel hardening
-def _patch_blank_sentinels() -> None:
-    """Make any _SafeBlank-style sentinel behave as numeric zero.
+# ------------------------------------------------- sentinel hardening
+def _harden_class(cls) -> bool:
+    if not isinstance(cls, type):
+        return False
+    changed = False
 
-    Sweeps every hypeclip submodule (except side-effecty ones like the
-    tray) so the patch lands regardless of which module owns the class.
-    """
-    import importlib
-    import pkgutil
-
-    def _sb_float(self):
+    def _f(self):
         return 0.0
 
-    def _sb_int(self):
+    def _i(self):
         return 0
 
-    def _sb_bool(self):
+    def _b(self):
         return False
 
-    def _sb_add(self, o):
+    def _a(self, o):
         try:
             return 0.0 + float(o)
         except Exception:
             return NotImplemented
 
-    def _sb_radd(self, o):
+    def _ra(self, o):
         try:
             return float(o) + 0.0
         except Exception:
             return NotImplemented
 
-    def _harden(cls) -> bool:
-        if not isinstance(cls, type):
-            return False
-        changed = False
-        for name, fn in (("__float__", _sb_float), ("__int__", _sb_int),
-                         ("__bool__", _sb_bool), ("__add__", _sb_add),
-                         ("__radd__", _sb_radd)):
-            if not hasattr(cls, name):
-                try:
-                    setattr(cls, name, fn)
-                    changed = True
-                except Exception:
-                    pass
-        return changed
+    for name, fn in (("__float__", _f), ("__int__", _i), ("__bool__", _b),
+                     ("__add__", _a), ("__radd__", _ra)):
+        if not hasattr(cls, name):
+            try:
+                setattr(cls, name, fn)
+                changed = True
+            except Exception:
+                pass
+    return changed
+
+
+def _gc_harden_blank_classes() -> int:
+    """Harden EVERY live class whose name contains SafeBlank."""
+    import gc
+    n = 0
+    try:
+        objs = gc.get_objects()
+    except Exception:
+        return 0
+    for o in objs:
+        try:
+            if isinstance(o, type) and "SafeBlank" in (o.__name__ or ""):
+                if _harden_class(o):
+                    n += 1
+                    print("[hypeclip] hardened sentinel (gc): %s.%s"
+                          % (getattr(o, "__module__", "?"), o.__name__),
+                          flush=True)
+        except Exception:
+            continue
+    return n
+
+
+def _wrap_scan_detection() -> None:
+    """Wrap scan.detect: on the _SafeBlank TypeError, harden + retry."""
+    import importlib
+    try:
+        scan = importlib.import_module(".scan", __package__)
+    except Exception as e:
+        print("[hypeclip] could not import scan for wrapping: %s" % e,
+              flush=True)
+        return
+    orig = getattr(scan, "detect", None)
+    if not callable(orig) or getattr(orig, "_hypeclip_hardened", False):
+        return
+
+    def detect(*a, **k):
+        try:
+            return orig(*a, **k)
+        except TypeError as e:
+            if "_SafeBlank" in str(e):
+                print("[hypeclip] scan hit a blank sentinel - hardening "
+                      "and retrying once...", flush=True)
+                _gc_harden_blank_classes()
+                return orig(*a, **k)
+            raise
 
     try:
-        pkg = importlib.import_module(__package__)
-        paths = list(getattr(pkg, "__path__", []))
+        detect._hypeclip_hardened = True
     except Exception:
-        return
-    skip = {"tray", "main", "__main__"}
+        pass
+    scan.detect = detect
     try:
-        mod_names = [mi.name for mi in pkgutil.iter_modules(paths)]
+        pipe = importlib.import_module(".pipeline", __package__)
+        if getattr(pipe, "detect", None) is orig:
+            pipe.detect = detect
     except Exception:
-        return
-    for mname in mod_names:
-        if mname in skip:
-            continue
-        try:
-            mod = importlib.import_module("." + mname, __package__)
-        except Exception:
-            continue
-        try:
-            names = list(vars(mod).keys())
-        except Exception:
-            continue
-        for attr in names:
-            if "SafeBlank" in attr:
-                try:
-                    if _harden(getattr(mod, attr)):
-                        print("[hypeclip] hardened numeric sentinel: "
-                              + mname + "." + attr, flush=True)
-                except Exception:
-                    pass
+        pass
+    print("[hypeclip] scan.detect wrapped with blank-hardening retry",
+          flush=True)
 
 
 # ------------------------------------------------------------- helpers
@@ -324,7 +341,12 @@ def _install_ytdlp_fix() -> None:
 
 
 try:
-    _patch_blank_sentinels()
+    _gc_harden_blank_classes()
+except Exception:
+    pass
+
+try:
+    _wrap_scan_detection()
 except Exception:
     pass
 
