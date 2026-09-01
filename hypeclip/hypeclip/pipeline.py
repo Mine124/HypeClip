@@ -507,6 +507,14 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         sel = r.wait_selection()
         if stop is not None and stop.is_set():
             return []
+        try:
+            _fr = getattr(r, "face_rect", None)
+            if isinstance(_fr, (list, tuple)) and len(_fr) == 4 \
+                    and face_rect is None:
+                face_rect = tuple(float(v) for v in _fr)
+                r.log("👤 face layout ON - facecam top, gameplay bottom")
+        except Exception:
+            pass
         track_point = sel.get("point") \
             if sel.get("mode") == "track" else None
         r.stage("scan")
