@@ -19,7 +19,7 @@ REQUIRED_MODULES = [
     "beats", "reframe", "scan", "sources", "tracker", "director",
     "editor", "learn", "stylelearn", "branding", "platforms",
     "tray", "updater", "utils", "config", "audit", "editplan",
-    "licensing", "understand", "vre",
+    "licensing", "understand", "vre", "layout",
 ]
 
 for mod in REQUIRED_MODULES:
