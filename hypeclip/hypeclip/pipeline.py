@@ -16,6 +16,41 @@ from .config import Settings
 from .utils import fmt_ts, probe_dims, probe_duration, safe_name, which_ffmpeg
 
 
+# ------------------------------------------------------------------
+# Settings coercion helpers. The sources layer can hand back "_SafeBlank"
+# placeholders for unset values; raw int()/float()/str ops on them crash
+# the pipeline. Every Settings read below goes through these helpers,
+# which fall back to the documented defaults instead.
+# ------------------------------------------------------------------
+def _num(v, default):
+    if isinstance(v, bool):
+        return float(default)
+    if isinstance(v, (int, float)):
+        f = float(v)
+        return f if f == f else float(default)
+    try:
+        f = float(str(v).strip())
+        return f if f == f else float(default)
+    except Exception:
+        return float(default)
+
+
+def _int(v, default):
+    return int(round(_num(v, default)))
+
+
+def _bool(v, default):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return bool(default)
+
+
+def _str(v, default):
+    return v if isinstance(v, str) else default
+
+
 class Reporter:
     def log(self, msg): print(msg, flush=True)
     def stage(self, name): pass
@@ -37,7 +72,7 @@ def run(url: str, settings: Settings, r: Reporter,
     sfx.ensure_defaults(settings.sfx_dir, r)
 
     up = getattr(settings, "uploaded_file", "")
-    if up and os.path.isfile(up):
+    if isinstance(up, str) and up and os.path.isfile(up):
         return _local_file(up, settings, r, stop)
 
     r.stage("resolve")
@@ -76,6 +111,8 @@ def _analyze(analyzer, settings, r, total=None):
 
 
 def _dims_for(aspect, src_h):
+    if not isinstance(aspect, str):
+        aspect = "9:16"
     if aspect == "9:16":
         return int(round(src_h * 9 / 16)) // 2 * 2, src_h
     if aspect == "1:1":
@@ -86,12 +123,21 @@ def _dims_for(aspect, src_h):
 def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     work, src = ctx["work"], ctx["media"]
 
+    # hardened locals (blank-proof)
+    pre_roll = _num(settings.pre_roll, 1.5)
+    fps_out = _int(settings.fps, 60)
+    zoom_strength = _int(settings.zoom_strength, 20)
+    shake_setting = _num(settings.shake, 0.3)
+    autocap = _bool(settings.autocaptions, True)
+    ttext = _str(getattr(settings, "title_text", ""), "")
+    score_n = _num(score, 5.0)
+
     # ================= HOOK PASS =================
     probe_wav = os.path.join(work, f"c{idx}_probe.wav")
     captions.slice_wav(src, start, dur, probe_wav)
     hook_delta, hook_why = 0.0, "n/a"
     segs = []
-    if settings.autocaptions:
+    if autocap:
         segs = captions.transcribe_audio(probe_wav, settings, r)
         try:
             from . import hooks
@@ -112,7 +158,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
                 for w in s["words"]:
                     w["s"] -= hook_delta; w["e"] -= hook_delta
         r.log(f"🪝 hook trim -{hook_delta:.1f}s ({hook_why})")
-    elif settings.autocaptions:
+    elif autocap:
         r.log(f"🪝 hook kept as-is ({hook_why})")
 
     wav = os.path.join(work, f"c{idx}.wav")
@@ -120,7 +166,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
 
     subs_path = None
     caption_texts = ""
-    if settings.autocaptions and segs:
+    if autocap and segs:
         caption_texts = " ".join(s.get("text", "") for s in segs)
     pre_cat = "highlight"
     if caption_texts:
@@ -163,7 +209,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
             r.log(f"(dead-air surgery skipped: {e})")
 
     # ---- captions ----
-    if settings.autocaptions and segs:
+    if autocap and segs:
         cs = CaptionStyle.load_active()
         if pre_cat == "reaction":
             cs.d["effect"] = "fade"
@@ -173,7 +219,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
 
     # ---- SFX taste engine (transient-aligned) ----
     events: list = []
-    if settings.sfx_enabled:
+    if _bool(settings.sfx_enabled, True):
         pool = sfx.list_sfx(settings.sfx_dir)
         if pool:
             try:
@@ -185,66 +231,74 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
             except Exception as e:  # noqa: BLE001
                 r.log(f"(sfx engine fallback: {e})")
                 pool = pool
-                impact_fb = min(max(settings.pre_roll, 0.2), dur - 0.5)
+                impact_fb = min(max(pre_roll, 0.2), dur - 0.5)
                 if pool:
                     events = [{"t": impact_fb, "file": pool[0],
-                               "gain_db": settings.sfx_volume_db}]
+                               "gain_db": _num(settings.sfx_volume_db, -6)}]
 
     music = None
-    if settings.music_file and os.path.isfile(settings.music_file):
-        music = {"file": settings.music_file,
-                 "volume_db": settings.music_volume_db,
-                 "duck": settings.duck_music}
+    music_file = getattr(settings, "music_file", "")
+    if isinstance(music_file, str) and music_file \
+            and os.path.isfile(music_file):
+        music = {"file": music_file,
+                 "volume_db": _num(settings.music_volume_db, -18),
+                 "duck": _bool(settings.duck_music, True)}
 
     sub = None
-    if getattr(settings, "sub_name", ""):
+    sub_name = getattr(settings, "sub_name", "")
+    if isinstance(sub_name, str) and sub_name:
         from .config import DATA_DIR
         sp = os.path.join(DATA_DIR, "subs",
-                          "".join(c for c in settings.sub_name.lower()
+                          "".join(c for c in sub_name.lower()
                                   if c.isalnum() or c in "-_ ")[:32] + ".png")
         if os.path.isfile(sp):
-            sub = {"file": sp, "dur": settings.sub_dur,
-                   "pos": settings.sub_pos,
-                   "t0": 0.5 if settings.sub_when == "start"
-                        else max(0.3, dur - settings.sub_dur - 0.3)}
+            sub_dur = _num(settings.sub_dur, 3.0)
+            sub = {"file": sp, "dur": sub_dur,
+                   "pos": _str(settings.sub_pos, "bottom-right"),
+                   "t0": 0.5 if _str(settings.sub_when, "start") == "start"
+                        else max(0.3, dur - sub_dur - 0.3)}
 
-    wm = settings.watermark_file if settings.watermark_file and \
-        os.path.isfile(settings.watermark_file) else None
+    wm_file = getattr(settings, "watermark_file", "")
+    wm = wm_file if isinstance(wm_file, str) and wm_file \
+        and os.path.isfile(wm_file) else None
 
     # ---- PACING DOCTRINE (continuous intensity) ----
     doc = decide.pacing_plan(pre_cat, 70)
     r.log(f"🧭 doctrine[{pre_cat}] ({doc.get('intensity', 0.5)}): "
           f"{doc['note']}")
-    zoom_on = settings.zoom_punch and doc["zoom"]
+    zoom_on = _bool(settings.zoom_punch, True) and doc["zoom"]
     do_punch, amp, zreason = decide.punch_decision(
-        pre_cat, int(_clamp(score, 0, 99)), doc.get("intensity", 0.5))
+        pre_cat, int(_clamp(score_n, 0, 99)), doc.get("intensity", 0.5))
     if do_punch and doc["zoom"]:
         zoom_on = True
         r.log(f"🧭 punch-in: {zreason} ({int(amp * 100)}%)")
-    shake_v = settings.shake if doc["shake"] else 0.0
-    flash_v = settings.flash_intro and doc["flash"]
-    bloom_v = settings.bloom and doc["bloom"]
-    grain_v = settings.grain and doc["grain"]
-    vig_v = settings.vignette and doc["vignette"]
-    beat_v = settings.beat_sync and doc["beat"]
+    shake_v = shake_setting if doc["shake"] else 0.0
+    flash_v = _bool(settings.flash_intro, False) and doc["flash"]
+    bloom_v = _bool(settings.bloom, False) and doc["bloom"]
+    grain_v = _bool(settings.grain, False) and doc["grain"]
+    vig_v = _bool(settings.vignette, False) and doc["vignette"]
+    beat_v = _bool(settings.beat_sync, True) and doc["beat"]
 
     plan = {
         "src": src, "dest": os.path.join(work, f"c{idx}_fin.mp4"),
-        "start": start, "dur": dur, "fps": settings.fps,
-        "encoder_mode": settings.gpu, "aspect": settings.aspect,
-        "smart_reframe": settings.smart_reframe,
+        "start": start, "dur": dur, "fps": fps_out,
+        "encoder_mode": _bool(settings.gpu, True),
+        "aspect": _str(settings.aspect, "9:16"),
+        "smart_reframe": _bool(settings.smart_reframe, True),
         "sendcmd": os.path.join(work, f"c{idx}_cmd.txt"),
         "W": ctx["dims"][0], "H": ctx["dims"][1],
-        "enhance": bool(getattr(settings, "enhance", False)),
-        "enhance_mode": getattr(settings, "enhance_mode", "light"),
-        "look": settings.fx_look, "bloom": bloom_v,
+        "enhance": _bool(getattr(settings, "enhance", False), False),
+        "enhance_mode": _str(getattr(settings, "enhance_mode", "light"),
+                             "light"),
+        "look": _str(settings.fx_look, "clean"), "bloom": bloom_v,
         "grain": grain_v, "vignette": vig_v,
-        "zoom_punch": zoom_on, "zoom_strength": settings.zoom_strength,
+        "zoom_punch": zoom_on, "zoom_strength": zoom_strength,
         "shake": shake_v,
-        "impact_t": min(settings.pre_roll, dur * 0.6),
+        "impact_t": min(pre_roll, dur * 0.6),
         "beat_sync": beat_v, "flash_intro": flash_v,
-        "title": settings.title_text.replace("{score}", str(int(score))),
-        "progress_bar": settings.progress_bar, "watermark": wm,
+        "title": ttext.replace("{score}", str(int(_clamp(score_n, 0, 99)))),
+        "progress_bar": _bool(settings.progress_bar, True),
+        "watermark": wm,
         "subscribe": sub,
         "subs": subs_path, "sfx_events": events, "music": music,
         "wav": wav,
@@ -272,7 +326,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     clip = {"file": os.path.basename(dest),
             "url": "/clips/" + urllib.parse.quote(os.path.basename(dest)),
             "duration": round(probe_duration(dest), 1),
-            "score": round(score, 1), "start": round(start, 1)}
+            "score": round(score_n, 1), "start": round(start, 1)}
 
     # ---- intelligence pass ----
     try:
@@ -280,7 +334,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         stem = os.path.splitext(os.path.basename(dest))[0]
         info_i = intel.finalize(
             wav=wav, texts=caption_texts, src_title=title,
-            peak_score=score, start=start, dur=dur,
+            peak_score=score_n, start=start, dur=dur,
             video=dest, impact_t=min(plan["impact_t"], dur - 0.5),
             out_dir=settings.out_dir, stem=stem)
         clip.update(info_i)
@@ -293,7 +347,7 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
     # ---- retention prediction + critic ----
     try:
         db = intel.audio_db(wav)
-        feats = decide.features_from_db(db, 0.0, dur, score, caption_texts)
+        feats = decide.features_from_db(db, 0.0, dur, score_n, caption_texts)
         rt = decide.predict(feats)
         clip["retention"] = rt
         issues = decide.critique(
@@ -371,15 +425,19 @@ def _vod(url, info, plat, settings, r, stop):
         progress_cb=lambda f: r.progress(0.02 + 0.38 * (f or 0)))
     dur = probe_duration(path)
     r.media_ready(key, os.path.basename(path), dur)
+    # FIX: mark the media as a proxy so the per-clip HD fetch actually
+    # runs below (previously dead code - clips rendered from the
+    # low-res preview even though HD was promised).
     return _scan_and_render(path, dur, info["title"],
-                            settings, r, stop, url=url)
+                            settings, r, stop, url=url,
+                            media_is_proxy=True)
 
 
 def _scan_and_render(media_path, dur, title, settings, r, stop,
                      url=None, media_is_proxy=False):
     """select -> scan -> intelligence -> [review unless autopilot] ->
     per-clip HD fetch -> render -> audit."""
-    src_h = min(settings.max_height, probe_dims(media_path)[1])
+    src_h = min(_int(settings.max_height, 1080), probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
     proxy = media_is_proxy
@@ -403,7 +461,7 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                 settings, media_path,
                 (rc.get("x", 0.6), rc.get("y", 0),
                  rc.get("w", 0.4), rc.get("h", 1.0)),
-                r, sample_fps=float(getattr(settings, "scan_fps", 6)))
+                r, sample_fps=_num(getattr(settings, "scan_fps", 6), 6.0))
             moments = _analyze(analyzer, settings, r, dur)
 
         # ---- smart boundaries + hooks ----
@@ -417,7 +475,7 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         try:
             from . import intel
             dbx = intel.audio_db(media_path)
-            for m in moments[:int(settings.max_clips)]:
+            for m in moments[:_int(settings.max_clips, 20)]:
                 fa = decide.features_from_db(dbx, m.start,
                                              m.end - m.start, m.score)
                 alt_end = m.end - min(6.0, (m.end - m.start) * 0.18)
@@ -438,7 +496,8 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                 from . import tracker
                 pt = sel["point"]
                 ordered_m = sorted(
-                    moments, key=lambda x: x.start)[:int(settings.max_clips)]
+                    moments,
+                    key=lambda x: x.start)[:_int(settings.max_clips, 20)]
                 tracks = {}
                 for i, m in enumerate(ordered_m):
                     outp = os.path.join(ctx["work"], f"trk_{i}.txt")
@@ -446,7 +505,7 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                         media_path, m.start, m.end - m.start,
                         (float(pt.get("x", 0.5)),
                          float(pt.get("y", 0.5))),
-                        settings.aspect, outp)
+                        _str(settings.aspect, "9:16"), outp)
                     if trk:
                         tracks[i] = trk
                 ctx["tracks_by_index"] = tracks
@@ -467,12 +526,13 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
             break
         cmd = r.wait_command()
         if cmd[0] == "rescan":
-            settings.hype_threshold = float(cmd[1])
+            settings.hype_threshold = _num(cmd[1], 3.5)
             continue
         break
 
     r.stage("clip")
-    ordered = sorted(moments, key=lambda m: m.start)[:int(settings.max_clips)]
+    ordered = sorted(moments,
+                     key=lambda m: m.start)[:_int(settings.max_clips, 20)]
     hd: dict = {}
     if url and proxy:
         r.stage("fetch-hd")
@@ -495,7 +555,7 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
             sdur = min(probe_duration(seg), m.end - m.start + 0.5)
             c = {"work": os.path.dirname(seg), "media": seg,
                  "dims": _dims_for(settings.aspect,
-                                   min(settings.max_height,
+                                   min(_int(settings.max_height, 1080),
                                        probe_dims(seg)[1]))}
             s, d = 0.0, min(sdur, m.end - m.start)
         else:
@@ -503,7 +563,8 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
             s, d = m.start, m.end - m.start
         return i, _finish_clip(c, s, d, i, title, m.score, settings, r)
 
-    workers = max(1, min(int(settings.workers), 3))
+    # THE FIX: this line was the crash (int() on a blank workers value)
+    workers = max(1, min(_int(settings.workers, 3), 3))
     if workers > 1 and len(ordered) > 1:
         with cf.ThreadPoolExecutor(max_workers=workers) as ex:
             for done, (i, c) in enumerate(ex.map(job, enumerate(ordered))):
@@ -520,14 +581,15 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
 
 
 def _spawn_recorder(url, work, settings):
+    mh = _int(settings.max_height, 1080)
     cmd = [sys.executable, "-m", "yt_dlp", url,
-           "-f", f"bv*[height<={settings.max_height}]+ba/"
-                 f"b[height<={settings.max_height}]/b",
+           "-f", f"bv*[height<={mh}]+ba/b[height<={mh}]/b",
            "--hls-use-mpegts", "-o", os.path.join(work, "rec.%(ext)s"),
            "--retries", "infinite", "--fragment-retries", "infinite",
            "--concurrent-fragments", "4", "-q"]
-    if settings.cookies_browser:
-        cmd += ["--cookies-from-browser", settings.cookies_browser]
+    cb = getattr(settings, "cookies_browser", "")
+    if isinstance(cb, str) and cb:
+        cmd += ["--cookies-from-browser", cb]
     return subprocess.Popen(cmd)
 
 
@@ -552,6 +614,10 @@ def _live(url, info, settings, r, stop):
     clips: list = []
     idx = 0
     t0 = time.time()
+    live_cd = _num(settings.cooldown, 8.0)
+    live_pre = _num(settings.pre_roll, 1.5)
+    live_dur = _num(settings.clip_duration, 90.0)
+    live_h = _int(settings.max_height, 1080)
 
     try:
         while stop is None or not stop.is_set():
@@ -577,13 +643,11 @@ def _live(url, info, settings, r, stop):
             for m in moments:
                 pk = int(m.peak)
                 if rec_dur - m.peak < 60 and pk not in fired and \
-                        all(abs(pk - f) > settings.cooldown
-                            for f in fired):
+                        all(abs(pk - f) > live_cd for f in fired):
                     fired.add(pk)
                     pending.append(
-                        {"start": max(0, pk - settings.pre_roll),
-                         "end": pk - settings.pre_roll
-                                + settings.clip_duration,
+                        {"start": max(0, pk - live_pre),
+                         "end": pk - live_pre + live_dur,
                          "score": m.score})
                     r.log(f"LIVE HYPE @ {fmt_ts(m.peak)} - queued")
 
@@ -591,8 +655,8 @@ def _live(url, info, settings, r, stop):
             for p in sorted(ready, key=lambda x: x["start"]):
                 pending.remove(p)
                 ctx = {"work": work, "media": rec_file,
-                       "dims": _dims_for(settings.aspect,
-                                         settings.max_height)}
+                       "dims": _dims_for(_str(settings.aspect, "9:16"),
+                                         live_h)}
                 clips.append(_finish_clip(ctx, p["start"],
                                           p["end"] - p["start"],
                                           idx, info["title"], p["score"],
@@ -611,7 +675,7 @@ def _live(url, info, settings, r, stop):
                 rec_proc.kill()
         chat.stop()
 
-    if not settings.keep_temp:
+    if not _bool(getattr(settings, "keep_temp", False), False):
         shutil.rmtree(work, ignore_errors=True)
     r.stage("done")
     r.progress(1.0)
