@@ -1,6 +1,7 @@
 from __future__ import annotations
 import concurrent.futures as cf
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -13,7 +14,8 @@ from . import audiohype, audit, beats, captions, decide, downloader, fx, sfx
 from . import scan, sources, youtube
 from .captionstyle import CaptionStyle
 from .config import Settings
-from .utils import fmt_ts, probe_dims, probe_duration, safe_name, which_ffmpeg
+from .utils import (fmt_ts, probe_dims, probe_duration, resolve_bin,
+                    safe_name, which_ffmpeg)
 
 
 # ------------------------------------------------------------------
@@ -284,7 +286,8 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "start": start, "dur": dur, "fps": fps_out,
         "encoder_mode": _bool(settings.gpu, True),
         "aspect": _str(settings.aspect, "9:16"),
-        "smart_reframe": _bool(settings.smart_reframe, True),
+        "smart_reframe": (not ctx.get("no_reframe"))
+        and _bool(settings.smart_reframe, True),
         "sendcmd": os.path.join(work, f"c{idx}_cmd.txt"),
         "W": ctx["dims"][0], "H": ctx["dims"][1],
         "enhance": _bool(getattr(settings, "enhance", False), False),
@@ -304,8 +307,16 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         "wav": wav,
     }
 
+    # ---- persist the full render plan (powers the effect toggle panel) ----
+    plan_file = ""
+    try:
+        plan_file = os.path.join(work, f"c{idx}_plan.json")
+        json.dump(plan, open(plan_file, "w", encoding="utf-8"), default=str)
+    except Exception:
+        plan_file = ""
+
     trk = (ctx.get("tracks_by_index") or {}).get(idx)
-    if trk and not mapping:      # tracking timeline breaks after surgery
+    if trk and not mapping and not ctx.get("no_reframe"):
         plan["track_cmd"] = trk["cmd_file"]
     elif trk and mapping:
         r.log("(eagle-eye skipped on this clip: timeline was surgically "
@@ -323,10 +334,46 @@ def _finish_clip(ctx, start, dur, idx, title, score, settings, r):
         n += 1
     shutil.move(plan["dest"], dest)
 
+    # ---- clean reference (no effects, for side-by-side review) ----
+    clean_url, clean_name = "", ""
+    try:
+        stem = os.path.splitext(os.path.basename(dest))[0]
+        clean_name = stem + "_clean.mp4"
+        clean_dest = os.path.join(settings.out_dir, clean_name)
+        clean_src = ctx.get("clean_src")
+        if clean_src and os.path.isfile(clean_src):
+            shutil.copyfile(clean_src, clean_dest)
+        else:
+            W, H = ctx["dims"]
+            vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                  f"crop={W}:{H}")
+            cmd = [resolve_bin("ffmpeg"), "-y", "-v", "error",
+                   "-ss", f"{float(start):.3f}", "-t", f"{float(dur):.3f}",
+                   "-i", src, "-vf", vf,
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                   "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+                   "-movflags", "+faststart", clean_dest]
+            p = subprocess.run(cmd, capture_output=True, text=True,
+                               errors="replace", timeout=900)
+            if p.returncode != 0 or not os.path.isfile(clean_dest):
+                raise RuntimeError((p.stderr or "")[-200:])
+        clean_url = "/clips/" + urllib.parse.quote(clean_name)
+    except Exception as e:  # noqa: BLE001
+        r.log(f"(clean reference skipped: {e})")
+
     clip = {"file": os.path.basename(dest),
             "url": "/clips/" + urllib.parse.quote(os.path.basename(dest)),
             "duration": round(probe_duration(dest), 1),
             "score": round(score_n, 1), "start": round(start, 1)}
+
+    if clean_url:
+        clip["clean"] = clean_url
+        clip["clean_file"] = clean_name
+    clip["hook"] = (f"-{hook_delta:.1f}s trimmed ({hook_why})"
+                    if hook_delta >= 0.6 else f"kept as-is ({hook_why})")
+    clip["created"] = time.strftime("%H:%M")
+    if plan_file:
+        clip["plan_file"] = plan_file
 
     # ---- intelligence pass ----
     try:
@@ -436,12 +483,24 @@ def _vod(url, info, plat, settings, r, stop):
 def _scan_and_render(media_path, dur, title, settings, r, stop,
                      url=None, media_is_proxy=False):
     """select -> scan -> intelligence -> [review unless autopilot] ->
-    per-clip HD fetch -> render -> audit."""
+    per-clip HD fetch -> face layout -> render -> audit."""
     src_h = min(_int(settings.max_height, 1080), probe_dims(media_path)[1])
     ctx = {"work": os.path.dirname(media_path), "media": media_path,
            "dims": _dims_for(settings.aspect, src_h)}
     proxy = media_is_proxy
     track_point = None
+
+    # ---- user-guided face layout (set via the FACE REGION picker) ----
+    face_rect = getattr(r, "face_rect", None)
+    try:
+        if isinstance(face_rect, (list, tuple)) and len(face_rect) == 4:
+            face_rect = tuple(float(v) for v in face_rect)
+        else:
+            face_rect = None
+    except Exception:
+        face_rect = None
+    if face_rect:
+        r.log("👤 face layout ON - facecam top band, gameplay bottom band")
 
     moments = []
     while True:
@@ -547,6 +606,7 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
                       f"rendering from preview quality")
 
     clips: list = [None] * len(ordered)
+    used_layout: dict = {}
 
     def job(im):
         i, m = im
@@ -561,9 +621,24 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
         else:
             c = ctx
             s, d = m.start, m.end - m.start
+        if face_rect:
+            try:
+                from . import layout
+                comp = os.path.join(c["work"], f"c{i}_comp.mp4")
+                made = layout.build_composite(c["media"], s, d,
+                                              face_rect, comp, r)
+                if made:
+                    cw, ch = probe_dims(made)
+                    c = {"work": c["work"], "media": made,
+                         "dims": (cw, ch), "clean_src": made,
+                         "no_reframe": True}
+                    s, d = 0.0, probe_duration(made)
+                    used_layout[i] = True
+                    r.log(f"👤 clip {i + 1}: face-top layout composited")
+            except Exception as e:  # noqa: BLE001
+                r.log(f"(face layout skipped on clip {i + 1}: {e})")
         return i, _finish_clip(c, s, d, i, title, m.score, settings, r)
 
-    # THE FIX: this line was the crash (int() on a blank workers value)
     workers = max(1, min(_int(settings.workers, 3), 3))
     if workers > 1 and len(ordered) > 1:
         with cf.ThreadPoolExecutor(max_workers=workers) as ex:
