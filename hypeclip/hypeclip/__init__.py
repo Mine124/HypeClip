@@ -1,28 +1,25 @@
-"""HypeClip package bootstrap - v6.7.
+"""HypeClip package bootstrap - v6.8.
 
-Boot stamp + universal yt-dlp retry engine + data-403 recovery +
-universal ffmpeg_location injection.
-
-- Auth walls (bot-check/login/private/429): cookies.txt -> YouTube player
-  clients -> browser cookies, 15-min per-platform cooldown after failure.
-- Data walls (HTTP 403/410/503 on video bytes = stale signed URL):
-  re-resolve fresh URLs up to 3x, then cookies.txt, 2-min soft cooldown.
-- ffmpeg: EVERY YoutubeDL instance gets ffmpeg_location from Data\\bin
-  (or PATH) injected at creation, so VRE downloads, per-clip HD segment
-  fetches, and live recording can always find the bundled ffmpeg.
+v6.8 changes:
+  - auth markers tightened: "confirm you" removed (it false-matched
+    TikTok's "Confirm you are on the latest version" extractor error,
+    triggering a pointless cookie chain and a wrong final tip)
+  - NEW extractor-error recovery: "Unexpected response"/"report this
+    issue" errors retry with fresh instances (often transient) and, for
+    TikTok, try known-good alternate API hostnames. No cooldown (not a
+    flag). Everything else unchanged from v6.7.
 """
 from __future__ import annotations
 
-print("[hypeclip] __init__ v6.7 ACTIVE", flush=True)
+print("[hypeclip] __init__ v6.8 ACTIVE", flush=True)
 
 import os
 import shutil
 import sys
-import threading
 import time
 
 _AUTH_MARKERS = (
-    "sign in to confirm", "not a bot", "confirm you", "use --cookies",
+    "sign in to confirm", "not a bot", "use --cookies",
     "log in to", "login required", "please sign in", "requires login",
     "requires authentication", "private video", "this video is private",
     "login required to view", "account is private",
@@ -30,15 +27,22 @@ _AUTH_MARKERS = (
     "rate limited",
 )
 _FLAG_MARKERS = (
-    "sign in to confirm", "not a bot", "confirm you",
+    "sign in to confirm", "not a bot",
     "too many requests", "http error 429",
 )
 _DATA_MARKERS = (
     "unable to download video data",
     "http error 403", "http error 410", "http error 503",
 )
+_EXTRACTOR_MARKERS = (
+    "unexpected response", "please report this issue",
+    "no video formats found", "temporary failure",
+)
 _FMT_RELAXED = "bestvideo*+bestaudio/best"
 _CLIENTS = ("tv", "tv_simply", "web_safari", "mweb", "ios", "android_vr")
+_TIKTOK_HOSTS = ("api16-normal-c-useast1a.tiktokv.com",
+                 "api22-normal-c-useast2a.tiktokv.com",
+                 "api19-normal-c-useast1a.tiktokv.com")
 _BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi")
 _COOLDOWN_S = 900.0
 _DATA_COOLDOWN_S = 120.0
@@ -47,7 +51,6 @@ _FAIL_T: dict = {}
 _DATA_FAIL_T: dict = {}
 
 
-# ------------------------------------------------- data dir + ffmpeg
 def _data_dir() -> str:
     try:
         if getattr(sys, "frozen", False):
@@ -81,7 +84,6 @@ def _locate_ffmpeg() -> str:
         return ""
 
 
-# put bundled tools on PATH before anything probes for them
 try:
     _bd = _ffmpeg_bin_dir()
     if _bd and _bd not in os.environ.get("PATH", ""):
@@ -129,6 +131,11 @@ def _is_data_error(exc: BaseException) -> bool:
     return any(m in s for m in _DATA_MARKERS)
 
 
+def _is_extractor_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _EXTRACTOR_MARKERS)
+
+
 def _errcode(e: BaseException) -> str:
     import re
     m = re.search(r"HTTP Error (\d{3})", str(e))
@@ -168,6 +175,11 @@ def _attempts(url) -> list:
             if cf:
                 extra["cookiefile"] = cf
             out.append((label, extra))
+    if platform == "tiktok":
+        for host in _TIKTOK_HOSTS:
+            out.append(("tiktok api host " + host.split("-")[0],
+                        {"extractor_args": {"tiktok": {
+                            "api_hostname": [host]}}}))
     for b in _BROWSERS:
         if _browser_installed(b):
             out.append((b + " browser cookies",
@@ -196,7 +208,6 @@ def _short(e: BaseException) -> str:
 
 
 def _install_ffmpeg_default() -> None:
-    """Inject ffmpeg_location into EVERY YoutubeDL at construction."""
     try:
         import yt_dlp
     except Exception:
@@ -245,9 +256,69 @@ def _install_ytdlp_fix() -> None:
         except Exception as first:
             if _is_auth_error(first):
                 return _auth_chain(self, url, args, kwargs, first)
+            if _is_extractor_error(first):
+                return _extractor_chain(self, url, args, kwargs, first)
             if _is_data_error(first):
                 return _data_chain(self, url, args, kwargs, first)
             raise
+
+    def _fresh_run(opts_extra, url, args, kwargs):
+        import yt_dlp as _y
+        opts = dict(opts_extra.pop("_base") if "_base" in opts_extra else {})
+        opts.update(opts_extra)
+        with _y.YoutubeDL(opts) as y2:
+            return orig(y2, url, *args, **kwargs)
+
+    def _extractor_chain(self, url, args, kwargs, first):
+        platform = _platform_hint(url)
+        last = first
+        print("[hypeclip] %s extractor hiccup - retrying (often "
+              "transient)..." % platform, flush=True)
+        for i in range(2):
+            time.sleep(1.5 * (i + 1))
+            try:
+                opts = dict(self.params or {})
+                import yt_dlp as _y
+                with _y.YoutubeDL(opts) as y2:
+                    return orig(y2, url, *args, **kwargs)
+            except Exception as e:
+                last = e
+                if _is_auth_error(e):
+                    return _auth_chain(self, url, args, kwargs, e)
+                if _is_data_error(e):
+                    return _data_chain(self, url, args, kwargs, e)
+                if not _is_extractor_error(e):
+                    raise
+        for label, extra in _attempts(url):
+            if "extractor_args" not in extra:
+                continue
+            try:
+                print("[hypeclip]   trying " + label + " ...", flush=True)
+                opts = dict(self.params or {})
+                opts.update(extra)
+                import yt_dlp as _y
+                with _y.YoutubeDL(opts) as y2:
+                    r = orig(y2, url, *args, **kwargs)
+                print("[hypeclip] method worked: " + label, flush=True)
+                return r
+            except Exception as e:
+                last = e
+                if _is_auth_error(e):
+                    return _auth_chain(self, url, args, kwargs, e)
+                if _is_data_error(e):
+                    return _data_chain(self, url, args, kwargs, e)
+        if platform == "tiktok":
+            tip = (" | HypeClip: TikTok changed their API and yt-dlp's "
+                   "extractor could not read it. The build already uses "
+                   "the newest yt-dlp - try again later (these breakages "
+                   "are usually fixed within days), try a different "
+                   "TikTok video, or download the clip manually and use "
+                   "the file upload.")
+        else:
+            tip = (" | HypeClip: the site extractor failed (site-side "
+                   "change, not your setup). Retry later or use a "
+                   "different video.")
+        raise type(last)(str(last) + tip)
 
     def _auth_chain(self, url, args, kwargs, first):
         import yt_dlp as _y
@@ -274,7 +345,8 @@ def _install_ytdlp_fix() -> None:
                     return orig(y2, url, *args, **kwargs)
             except Exception as e:
                 last = e
-                if not (_is_auth_error(e) or _is_format_error(e)):
+                if not (_is_auth_error(e) or _is_format_error(e)
+                        or _is_extractor_error(e)):
                     raise
         for label, extra in _attempts(url):
             for mode in ("app-format", "relaxed"):
@@ -312,6 +384,10 @@ def _install_ytdlp_fix() -> None:
                         print("[hypeclip]   " + label
                               + ": still no formats", flush=True)
                         break
+                    if _is_extractor_error(e2):
+                        print("[hypeclip]   " + label
+                              + ": extractor hiccup", flush=True)
+                        break
                     print("[hypeclip]   " + label + ": "
                           + _short(e2), flush=True)
                     break
@@ -347,6 +423,8 @@ def _install_ytdlp_fix() -> None:
                     return orig(y2, url, *args, **kwargs)
             except Exception as e:
                 last = e
+                if _is_auth_error(e):
+                    return _auth_chain(self, url, args, kwargs, e)
                 if not _is_data_error(e):
                     raise
         cf = _manual_cookiefile()
