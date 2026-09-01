@@ -25,7 +25,18 @@ from .editor import router as editor_router
 from .learn import router as learn_router
 from .stylelearn import router as style_router
 from .utils import ff_filter_path, resolve_bin, run
+import logging as _logging
 
+class _QuietConnReset(_logging.Filter):
+    def filter(self, record):
+        try:
+            m = record.getMessage()
+        except Exception:
+            return True
+        return ("ConnectionResetError" not in m
+                and "_call_connection_lost" not in m)
+
+_logging.getLogger("asyncio").addFilter(_QuietConnReset())
 app = FastAPI(title="HypeClip Studio")
 jobs: dict = {}
 exports: dict = {}
