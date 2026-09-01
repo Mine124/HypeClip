@@ -1,14 +1,22 @@
-"""HypeClip package bootstrap - v6.4.
+"""HypeClip package bootstrap - v6.7.
 
-Boot stamp + universal yt-dlp retry engine + lazy scan hardening.
-The first line of output is always the boot stamp so we can verify
-exactly which version of this file is running inside a build.
+Boot stamp + universal yt-dlp retry engine + data-403 recovery +
+universal ffmpeg_location injection.
+
+- Auth walls (bot-check/login/private/429): cookies.txt -> YouTube player
+  clients -> browser cookies, 15-min per-platform cooldown after failure.
+- Data walls (HTTP 403/410/503 on video bytes = stale signed URL):
+  re-resolve fresh URLs up to 3x, then cookies.txt, 2-min soft cooldown.
+- ffmpeg: EVERY YoutubeDL instance gets ffmpeg_location from Data\\bin
+  (or PATH) injected at creation, so VRE downloads, per-clip HD segment
+  fetches, and live recording can always find the bundled ffmpeg.
 """
 from __future__ import annotations
 
-print("[hypeclip] __init__ v6.4 ACTIVE", flush=True)
+print("[hypeclip] __init__ v6.7 ACTIVE", flush=True)
 
 import os
+import shutil
 import sys
 import threading
 import time
@@ -25,130 +33,21 @@ _FLAG_MARKERS = (
     "sign in to confirm", "not a bot", "confirm you",
     "too many requests", "http error 429",
 )
+_DATA_MARKERS = (
+    "unable to download video data",
+    "http error 403", "http error 410", "http error 503",
+)
 _FMT_RELAXED = "bestvideo*+bestaudio/best"
 _CLIENTS = ("tv", "tv_simply", "web_safari", "mweb", "ios", "android_vr")
 _BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi")
 _COOLDOWN_S = 900.0
+_DATA_COOLDOWN_S = 120.0
 _GOOD_X: dict = {}
 _FAIL_T: dict = {}
+_DATA_FAIL_T: dict = {}
 
 
-# ---------------------------------------------- lazy scan hardening
-def _harden_class(cls) -> bool:
-    if not isinstance(cls, type):
-        return False
-    changed = False
-
-    def _f(self):
-        return 0.0
-
-    def _i(self):
-        return 0
-
-    def _b(self):
-        return False
-
-    def _a(self, o):
-        try:
-            return 0.0 + float(o)
-        except Exception:
-            return NotImplemented
-
-    def _ra(self, o):
-        try:
-            return float(o) + 0.0
-        except Exception:
-            return NotImplemented
-
-    for name, fn in (("__float__", _f), ("__int__", _i), ("__bool__", _b),
-                     ("__add__", _a), ("__radd__", _ra)):
-        if not hasattr(cls, name):
-            try:
-                setattr(cls, name, fn)
-                changed = True
-            except Exception:
-                pass
-    return changed
-
-
-def _gc_sweep() -> int:
-    import gc
-    n = 0
-    try:
-        objs = gc.get_objects()
-    except Exception:
-        return 0
-    for o in objs:
-        try:
-            if isinstance(o, type) and "SafeBlank" in (o.__name__ or ""):
-                if _harden_class(o):
-                    n += 1
-                    print("[hypeclip] hardened sentinel (gc): %s.%s"
-                          % (getattr(o, "__module__", "?"), o.__name__),
-                          flush=True)
-        except Exception:
-            continue
-    return n
-
-
-def _wrap_when_ready(timeout_s: float = 600.0) -> None:
-    """Wait until hypeclip.scan exists in memory, then wrap detect().
-
-    Works regardless of import order and regardless of HOW pipeline.py
-    imported the function (module attr or from-import alias), because we
-    rebind every alias in pipeline's namespace that points at the
-    original function object.
-    """
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        scan = sys.modules.get("hypeclip.scan")
-        orig = getattr(scan, "detect", None) if scan else None
-        if callable(orig) and not getattr(orig, "_hypeclip_hardened", False):
-            def detect(*a, **k):
-                try:
-                    return orig(*a, **k)
-                except TypeError as e:
-                    if "_SafeBlank" in str(e):
-                        print("[hypeclip] scan hit a blank sentinel - "
-                              "hardening and retrying once...", flush=True)
-                        _gc_sweep()
-                        try:
-                            r = orig(*a, **k)
-                            print("[hypeclip] scan recovered after "
-                                  "hardening", flush=True)
-                            return r
-                        except Exception as e2:
-                            print("[hypeclip] scan retry failed: "
-                                  + str(e2)[:200], flush=True)
-                            raise
-                    raise
-            try:
-                detect._hypeclip_hardened = True
-            except Exception:
-                pass
-            scan.detect = detect
-            rebound = 0
-            pipe = sys.modules.get("hypeclip.pipeline")
-            if pipe is not None:
-                for aname, aval in list(vars(pipe).items()):
-                    if aval is orig:
-                        try:
-                            setattr(pipe, aname, detect)
-                            rebound += 1
-                        except Exception:
-                            pass
-            print("[hypeclip] scan.detect wrapped (lazy); pipeline "
-                  "aliases rebound: %d" % rebound, flush=True)
-            return
-        time.sleep(0.5)
-    print("[hypeclip] scan wrapper timed out waiting for hypeclip.scan",
-          flush=True)
-
-
-threading.Thread(target=_wrap_when_ready, daemon=True).start()
-
-
-# ------------------------------------------------------------- helpers
+# ------------------------------------------------- data dir + ffmpeg
 def _data_dir() -> str:
     try:
         if getattr(sys, "frozen", False):
@@ -159,6 +58,37 @@ def _data_dir() -> str:
         return p if os.path.isdir(p) else ""
     except Exception:
         return ""
+
+
+def _ffmpeg_bin_dir() -> str:
+    d = _data_dir()
+    if d and os.path.isfile(os.path.join(d, "bin", "ffmpeg.exe")):
+        return os.path.join(d, "bin")
+    return ""
+
+
+def _locate_ffmpeg() -> str:
+    d = _ffmpeg_bin_dir()
+    if d:
+        return d
+    w = shutil.which("ffmpeg")
+    if w:
+        return os.path.dirname(os.path.abspath(w))
+    try:
+        from .utils import resolve_bin
+        return os.path.dirname(os.path.abspath(resolve_bin("ffmpeg")))
+    except Exception:
+        return ""
+
+
+# put bundled tools on PATH before anything probes for them
+try:
+    _bd = _ffmpeg_bin_dir()
+    if _bd and _bd not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _bd + os.pathsep + os.environ.get("PATH", "")
+        print("[hypeclip] bundled bin prepended to PATH: " + _bd, flush=True)
+except Exception:
+    pass
 
 
 def _manual_cookiefile() -> str:
@@ -192,6 +122,17 @@ def _is_auth_error(exc: BaseException) -> bool:
 def _is_flag_error(exc: BaseException) -> bool:
     s = str(exc).lower()
     return any(m in s for m in _FLAG_MARKERS)
+
+
+def _is_data_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _DATA_MARKERS)
+
+
+def _errcode(e: BaseException) -> str:
+    import re
+    m = re.search(r"HTTP Error (\d{3})", str(e))
+    return m.group(1) if m else "data error"
 
 
 def _is_format_error(exc: BaseException) -> bool:
@@ -254,6 +195,38 @@ def _short(e: BaseException) -> str:
     return s[:100] + ("..." if len(s) > 100 else "")
 
 
+def _install_ffmpeg_default() -> None:
+    """Inject ffmpeg_location into EVERY YoutubeDL at construction."""
+    try:
+        import yt_dlp
+    except Exception:
+        return
+    if getattr(yt_dlp.YoutubeDL, "_hc_ffloc", False):
+        return
+    try:
+        orig_init = yt_dlp.YoutubeDL.__init__
+    except Exception:
+        return
+
+    def init(self, *a, **k):
+        orig_init(self, *a, **k)
+        try:
+            if not self.params.get("ffmpeg_location"):
+                loc = _locate_ffmpeg()
+                if loc:
+                    self.params["ffmpeg_location"] = loc
+        except Exception:
+            pass
+
+    try:
+        yt_dlp.YoutubeDL.__init__ = init
+        yt_dlp.YoutubeDL._hc_ffloc = True
+        print("[hypeclip] ffmpeg_location auto-injection installed",
+              flush=True)
+    except Exception:
+        pass
+
+
 def _install_ytdlp_fix() -> None:
     try:
         import yt_dlp
@@ -270,78 +243,135 @@ def _install_ytdlp_fix() -> None:
         try:
             return orig(self, url, *args, **kwargs)
         except Exception as first:
-            if not _is_auth_error(first):
-                raise
-            platform = _platform_hint(url)
-            left = _COOLDOWN_S - (time.time() - _FAIL_T.get(platform, 0.0))
-            if _FAIL_T.get(platform, 0.0) > 0 and left > 0:
-                raise type(first)(
-                    "HypeClip: %s retry cooldown active - retrying now "
-                    "would deepen the flag. Try again in ~%d min."
-                    % (platform, int(left // 60) + 1))
-            cf = _manual_cookiefile()
-            print("[hypeclip] %s login/bot wall hit. cookies.txt: %s"
-                  % (platform, cf or "NOT FOUND"), flush=True)
-            last = first
-            n_flag = n_other = 0
-            good = _GOOD_X.get(platform)
-            if good is not None:
+            if _is_auth_error(first):
+                return _auth_chain(self, url, args, kwargs, first)
+            if _is_data_error(first):
+                return _data_chain(self, url, args, kwargs, first)
+            raise
+
+    def _auth_chain(self, url, args, kwargs, first):
+        import yt_dlp as _y
+        platform = _platform_hint(url)
+        left = _COOLDOWN_S - (time.time() - _FAIL_T.get(platform, 0.0))
+        if _FAIL_T.get(platform, 0.0) > 0 and left > 0:
+            raise type(first)(
+                "HypeClip: %s retry cooldown active - retrying now "
+                "would deepen the flag. Try again in ~%d min."
+                % (platform, int(left // 60) + 1))
+        cf = _manual_cookiefile()
+        print("[hypeclip] %s login/bot wall hit. cookies.txt: %s"
+              % (platform, cf or "NOT FOUND"), flush=True)
+        last = first
+        n_flag = n_other = 0
+        good = _GOOD_X.get(platform)
+        if good is not None:
+            try:
+                print("[hypeclip] retrying with known-good method...",
+                      flush=True)
+                opts = dict(self.params or {})
+                opts.update(good)
+                with _y.YoutubeDL(opts) as y2:
+                    return orig(y2, url, *args, **kwargs)
+            except Exception as e:
+                last = e
+                if not (_is_auth_error(e) or _is_format_error(e)):
+                    raise
+        for label, extra in _attempts(url):
+            for mode in ("app-format", "relaxed"):
                 try:
-                    print("[hypeclip] retrying with known-good method...",
-                          flush=True)
                     opts = dict(self.params or {})
-                    opts.update(good)
-                    with yt_dlp.YoutubeDL(opts) as y2:
-                        return orig(y2, url, *args, **kwargs)
-                except Exception as e:
-                    last = e
-                    if not (_is_auth_error(e) or _is_format_error(e)):
-                        raise
-            for label, extra in _attempts(url):
-                for mode in ("app-format", "relaxed"):
-                    try:
-                        opts = dict(self.params or {})
-                        opts.update(extra)
-                        if mode == "relaxed":
-                            print("[hypeclip]   " + label
-                                  + ": auth OK, relaxing format...",
-                                  flush=True)
-                            opts["format"] = _FMT_RELAXED
-                            opts.setdefault("merge_output_format", "mp4")
-                        with yt_dlp.YoutubeDL(opts) as y2:
-                            r = orig(y2, url, *args, **kwargs)
-                        _GOOD_X[platform] = extra
-                        print("[hypeclip] method worked"
-                              + (" (relaxed format)" if mode == "relaxed"
-                                 else "") + ": " + label, flush=True)
-                        _FAIL_T.pop(platform, None)
-                        return r
-                    except Exception as e2:
-                        last = e2
-                        if _is_flag_error(e2):
-                            n_flag += 1
-                            print("[hypeclip]   " + label
-                                  + ": auth rejected", flush=True)
-                            break
-                        if _is_auth_error(e2):
-                            n_other += 1
-                            print("[hypeclip]   " + label
-                                  + ": needs the right login", flush=True)
-                            break
-                        if _is_format_error(e2):
-                            if mode == "app-format":
-                                continue
-                            print("[hypeclip]   " + label
-                                  + ": still no formats", flush=True)
-                            break
-                        n_other += 1
-                        print("[hypeclip]   " + label + ": "
-                              + _short(e2), flush=True)
+                    opts.update(extra)
+                    if mode == "relaxed":
+                        print("[hypeclip]   " + label
+                              + ": auth OK, relaxing format...", flush=True)
+                        opts["format"] = _FMT_RELAXED
+                        opts.setdefault("merge_output_format", "mp4")
+                    with _y.YoutubeDL(opts) as y2:
+                        r = orig(y2, url, *args, **kwargs)
+                    _GOOD_X[platform] = extra
+                    print("[hypeclip] method worked"
+                          + (" (relaxed format)" if mode == "relaxed"
+                             else "") + ": " + label, flush=True)
+                    _FAIL_T.pop(platform, None)
+                    return r
+                except Exception as e2:
+                    last = e2
+                    if _is_flag_error(e2):
+                        n_flag += 1
+                        print("[hypeclip]   " + label + ": auth rejected",
+                              flush=True)
                         break
-            flagged = n_flag >= 1 and n_flag >= n_other
-            if flagged:
-                _FAIL_T[platform] = time.time()
-            raise type(first)(str(last) + _final_tip(platform, flagged))
+                    if _is_auth_error(e2):
+                        n_other += 1
+                        print("[hypeclip]   " + label
+                              + ": needs the right login", flush=True)
+                        break
+                    if _is_format_error(e2):
+                        if mode == "app-format":
+                            continue
+                        print("[hypeclip]   " + label
+                              + ": still no formats", flush=True)
+                        break
+                    print("[hypeclip]   " + label + ": "
+                          + _short(e2), flush=True)
+                    break
+        flagged = n_flag >= 1 and n_flag >= n_other
+        if flagged:
+            _FAIL_T[platform] = time.time()
+        raise type(first)(str(last) + _final_tip(platform, flagged))
+
+    def _data_chain(self, url, args, kwargs, first):
+        import yt_dlp as _y
+        platform = _platform_hint(url)
+        left = _DATA_COOLDOWN_S - (time.time()
+                                   - _DATA_FAIL_T.get(platform, 0.0))
+        if _DATA_FAIL_T.get(platform, 0.0) > 0 and left > 0:
+            raise type(first)(
+                str(first)
+                + " | HypeClip: repeated stream-data failures on %s - "
+                  "wait ~%d min, then retry (a fresh run re-resolves new "
+                  "signed URLs). Check VPN/proxy, and for Twitch "
+                  "subscriber-only VODs log in to twitch.tv in a browser "
+                  "on this PC." % (platform, int(left // 60) + 1))
+        last = first
+        total = 3
+        for i in range(total - 1):
+            delay = 2.0 * (i + 1)
+            print("[hypeclip] stream data rejected (%s) - re-resolving "
+                  "fresh URLs in %.0fs (attempt %d/%d)..."
+                  % (_errcode(first), delay, i + 2, total), flush=True)
+            time.sleep(delay)
+            try:
+                opts = dict(self.params or {})
+                with _y.YoutubeDL(opts) as y2:
+                    return orig(y2, url, *args, **kwargs)
+            except Exception as e:
+                last = e
+                if not _is_data_error(e):
+                    raise
+        cf = _manual_cookiefile()
+        if cf:
+            print("[hypeclip] final attempt with Data/cookies.txt...",
+                  flush=True)
+            try:
+                opts = dict(self.params or {})
+                opts["cookiefile"] = cf
+                with _y.YoutubeDL(opts) as y2:
+                    r = orig(y2, url, *args, **kwargs)
+                _DATA_FAIL_T.pop(platform, None)
+                return r
+            except Exception as e:
+                last = e
+                if not _is_data_error(e):
+                    raise
+        _DATA_FAIL_T[platform] = time.time()
+        raise type(last)(
+            str(last)
+            + " | HypeClip: the platform kept refusing the video data. "
+              "This is usually a stale signed URL - retrying the job "
+              "re-resolves fresh URLs. If it persists: check VPN/proxy "
+              "is OFF, and for subscriber-only Twitch VODs sign in to "
+              "twitch.tv in a browser on this PC.")
 
     try:
         yt_dlp.YoutubeDL.extract_info = extract_info
@@ -349,6 +379,11 @@ def _install_ytdlp_fix() -> None:
     except Exception:
         pass
 
+
+try:
+    _install_ffmpeg_default()
+except Exception:
+    pass
 
 try:
     _install_ytdlp_fix()
