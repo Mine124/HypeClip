@@ -25,27 +25,16 @@ from .editor import router as editor_router
 from .learn import router as learn_router
 from .stylelearn import router as style_router
 from .utils import ff_filter_path, resolve_bin, run
-# Silence benign "browser closed the connection" asyncio noise
-import logging as _logging
 
-class _QuietConnReset(_logging.Filter):
-    def filter(self, record):
-        try:
-            m = record.getMessage()
-        except Exception:
-            return True
-        return ("ConnectionResetError" not in m
-                and "_call_connection_lost" not in m)
-
-_logging.getLogger("asyncio").addFilter(_QuietConnReset())
 app = FastAPI(title="HypeClip Studio")
 jobs: dict = {}
 exports: dict = {}
+_REVISIONS: dict = {}
+_RERENDER: dict = {}
 LAST_OPTS_PATH = os.path.join(DATA_DIR, "last_options.json")
 PRESET_DIR = os.path.join(DATA_DIR, "presets")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 _DL: dict = {"state": "idle", "frac": 0.0, "error": None, "path": None}
-_REVISIONS: dict = {}
 os.makedirs(PRESET_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -96,6 +85,7 @@ class Job(pipeline.Reporter):
         self.error: str | None = None
         self.media_url = ""
         self.duration = 0.0
+        self.face_rect = None
         self.stop_evt = threading.Event()
         self._sel_q: "_queue.Queue" = _queue.Queue()
         self._cmd_q: "_queue.Queue" = _queue.Queue()
@@ -151,6 +141,7 @@ class Job(pipeline.Reporter):
                 "scan_frac": round(self.scan_frac, 3),
                 "media_url": self.media_url,
                 "duration": round(self.duration, 1),
+                "face_rect": self.face_rect,
                 "error": self.error, "moments": self.moments,
                 "series": self.series, "clips": self.clips,
                 "logs": list(self.logs)[-300:]}
@@ -307,6 +298,27 @@ def job_select(job_id: str, body: dict):
     return {"ok": True}
 
 
+class FaceReq(BaseModel):
+    rect: list
+
+
+@app.post("/api/jobs/{job_id}/face")
+def job_face(job_id: str, body: FaceReq):
+    """Lock the streamer face region (normalized x,y,w,h) for this job."""
+    if job_id not in jobs:
+        raise HTTPException(404)
+    try:
+        rc = [float(v) for v in body.rect]
+    except Exception:
+        raise HTTPException(400, "rect must be 4 numbers")
+    if len(rc) != 4 or any(v < 0 or v > 1 for v in rc):
+        raise HTTPException(400, "rect values must be normalized 0..1")
+    jobs[job_id].face_rect = rc
+    jobs[job_id].log("👤 face region locked: x=%.2f y=%.2f w=%.2f h=%.2f"
+                     % (rc[0], rc[1], rc[2], rc[3]))
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/rescan")
 def job_rescan(job_id: str, body: dict):
     if job_id not in jobs:
@@ -422,6 +434,139 @@ def get_revise(revise_id: str):
         raise HTTPException(404)
     return {"id": rec["id"], "state": rec["state"], "error": rec["error"],
             "result": rec["result"], "logs": list(rec["logs"])}
+
+
+# --------------------- effect-toggle re-renders -------------------------
+def _find_plan_file(fname: str) -> str:
+    for j in list(jobs.values()):
+        for c in (j.clips or []):
+            try:
+                if os.path.basename(c.get("file", "")) == fname \
+                        and c.get("plan_file"):
+                    return c["plan_file"]
+            except Exception:
+                continue
+    return ""
+
+
+@app.get("/api/clip/plan")
+def clip_plan(file: str):
+    """Current AI effect state for a clip (drives the toggle panel)."""
+    fname = os.path.basename(file or "")
+    pf = _find_plan_file(fname)
+    if not pf or not os.path.isfile(pf):
+        raise HTTPException(404, "no saved plan for this clip")
+    try:
+        plan = json.load(open(pf, encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    effects = {
+        "captions": bool(plan.get("subs")),
+        "zoom": bool(plan.get("zoom_punch")),
+        "shake": float(plan.get("shake") or 0) > 0,
+        "glow": bool(plan.get("bloom")),
+        "grain": bool(plan.get("grain")),
+        "vignette": bool(plan.get("vignette")),
+        "sfx": bool(plan.get("sfx_events")),
+        "music": bool(plan.get("music")),
+        "flash": bool(plan.get("flash_intro")),
+        "beat": bool(plan.get("beat_sync")),
+        "title": bool(plan.get("title")),
+        "progress": bool(plan.get("progress_bar")),
+        "watermark": bool(plan.get("watermark")),
+        "cta": bool(plan.get("subscribe")),
+        "reframe": bool(plan.get("smart_reframe")),
+    }
+    return {"file": fname, "effects": effects}
+
+
+class RerenderReq(BaseModel):
+    file: str
+    effects: dict = {}
+
+
+@app.post("/api/clip/rerender")
+def clip_rerender(body: RerenderReq):
+    """Re-render ONE clip from its saved plan with per-effect toggles."""
+    from . import fx
+    fname = os.path.basename(body.file)
+    effects = body.effects or {}
+    pf = _find_plan_file(fname)
+    if not pf or not os.path.isfile(pf):
+        raise HTTPException(404, "no saved plan for this clip")
+    try:
+        plan = dict(json.load(open(pf, encoding="utf-8")))
+    except Exception as e:
+        raise HTTPException(400, "plan unreadable: %s" % e)
+    if not plan.get("src") or not os.path.isfile(plan["src"]):
+        raise HTTPException(400, "original source media no longer on disk")
+
+    if "captions" in effects:
+        plan["subs"] = plan.get("subs") if effects["captions"] else None
+    if "zoom" in effects:
+        plan["zoom_punch"] = bool(effects["zoom"])
+    if "shake" in effects:
+        plan["shake"] = plan.get("shake", 0.0) if effects["shake"] else 0.0
+    if "glow" in effects:
+        plan["bloom"] = bool(effects["glow"])
+    if "grain" in effects:
+        plan["grain"] = bool(effects["grain"])
+    if "vignette" in effects:
+        plan["vignette"] = bool(effects["vignette"])
+    if "sfx" in effects and not effects["sfx"]:
+        plan["sfx_events"] = []
+    if "music" in effects and not effects["music"]:
+        plan["music"] = None
+    if "flash" in effects:
+        plan["flash_intro"] = bool(effects["flash"])
+    if "beat" in effects:
+        plan["beat_sync"] = bool(effects["beat"])
+    if "title" in effects and not effects["title"]:
+        plan["title"] = ""
+    if "progress" in effects:
+        plan["progress_bar"] = bool(effects["progress"])
+    if "watermark" in effects and not effects["watermark"]:
+        plan["watermark"] = None
+    if "cta" in effects and not effects["cta"]:
+        plan["subscribe"] = None
+    if "reframe" in effects:
+        plan["smart_reframe"] = bool(effects["reframe"])
+
+    out_name = os.path.splitext(fname)[0] + "_custom.mp4"
+    plan["dest"] = os.path.join(Settings().out_dir, out_name)
+    rid = uuid.uuid4().hex[:10]
+    rec = {"id": rid, "state": "running", "logs": collections.deque(maxlen=60),
+           "result": None, "error": None}
+    _RERENDER[rid] = rec
+
+    class Rep:
+        @staticmethod
+        def log(m):
+            rec["logs"].append(str(m))
+
+    def go():
+        try:
+            fx.render_clip(plan, Rep())
+            if not os.path.isfile(plan["dest"]):
+                raise RuntimeError("renderer produced no file")
+            rec["result"] = {"file": out_name,
+                             "url": "/clips/"
+                                    + urllib.parse.quote(out_name)}
+            rec["state"] = "done"
+        except Exception as e:
+            rec["state"], rec["error"] = "error", str(e)
+            Rep.log("ERROR " + str(e))
+    threading.Thread(target=go, daemon=True).start()
+    return {"rerender_id": rid}
+
+
+@app.get("/api/rerender/{rerender_id}")
+def get_rerender(rerender_id: str):
+    rec = _RERENDER.get(rerender_id)
+    if not rec:
+        raise HTTPException(404)
+    return {"id": rec["id"], "state": rec["state"], "error": rec["error"],
+            "result": rec["result"], "logs": list(rec["logs"])[:20]}
 
 
 # ------------------------- VRE: viral reverse engineering ---------------
@@ -774,7 +919,7 @@ def index():
             html = f.read()
     except Exception:
         return FileResponse(p)
-    for name in ("retention.js", "vre.js"):
+    for name in ("retention.js", "vre.js", "review.js"):
         if ("src=\"/static/%s\"" % name) not in html \
                 and os.path.isfile(os.path.join(web_dir(), name)):
             tag = '<script src="/static/%s"></script>' % name
@@ -792,4 +937,3 @@ os.makedirs(Settings().work_dir, exist_ok=True)
 app.mount("/clips", StaticFiles(directory=Settings().out_dir), name="clips")
 app.mount("/media", StaticFiles(directory=Settings().work_dir), name="media")
 app.mount("/static", StaticFiles(directory=web_dir()), name="static")
-
