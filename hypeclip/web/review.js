@@ -599,9 +599,16 @@
     mod.classList.add("open");
   }
   function closeModal() {
-    mod.classList.remove("open");
-    mv.pause(); mv.removeAttribute("src"); mv.load();
-    modalClip = null; customUrl = null; customFile = null;
+    try {
+      mw.animate([{ opacity: 1, transform: "scale(1)" },
+                  { opacity: 0, transform: "scale(.96) translateY(8px)" }],
+                 { duration: 170, easing: "ease" });
+    } catch (e) {}
+    setTimeout(function () {
+      mod.classList.remove("open");
+      mv.pause(); mv.removeAttribute("src"); mv.load();
+      modalClip = null; customUrl = null; customFile = null;
+    }, 165);
   }
 
   var FX = [["captions", "Captions"], ["zoom", "Punch-in Zooms"],
