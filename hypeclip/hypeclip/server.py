@@ -919,7 +919,7 @@ def index():
             html = f.read()
     except Exception:
         return FileResponse(p)
-    for name in ("retention.js", "vre.js", "review.js"):
+    for name in ("polish.js", "retention.js", "vre.js", "review.js"):
         if ("src=\"/static/%s\"" % name) not in html \
                 and os.path.isfile(os.path.join(web_dir(), name)):
             tag = '<script src="/static/%s"></script>' % name
