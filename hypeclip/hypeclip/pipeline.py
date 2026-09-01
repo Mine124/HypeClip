@@ -490,8 +490,8 @@ def _scan_and_render(media_path, dur, title, settings, r, stop,
     proxy = media_is_proxy
     track_point = None
 
-    # ---- user-guided face layout (set via the FACE REGION picker) ----
-    face_rect = getattr(r, "face_rect", None)
+    # ---- user-guided face layout (locked via the FACE REGION picker) ----
+    face_rect = None
     try:
         if isinstance(face_rect, (list, tuple)) and len(face_rect) == 4:
             face_rect = tuple(float(v) for v in face_rect)
