@@ -189,6 +189,13 @@ def start_job(req: StartReq):
     cap = req.options.pop("caption", None)
     s.update(req.options)
 
+    if not getattr(s, "autocaptions", True):
+        print("[hypeclip] WARNING: autocaptions is OFF in this job's "
+              "options - clips will render WITHOUT captions", flush=True)
+    if not getattr(s, "sfx_enabled", True):
+        print("[hypeclip] WARNING: sfx_enabled is OFF - no sound "
+              "effects will be added", flush=True)
+    
     # ---- VRE style transfer: active blueprint fills UNSPECIFIED options
     applied = []
     try:
